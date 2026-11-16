@@ -8,4 +8,6 @@ coverage/
 *.pem
 *.key
 .DS_Store
+ Assignment.md
+ AGENTS.md
 

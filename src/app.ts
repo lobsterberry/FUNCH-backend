@@ -9,6 +9,8 @@ import { createAuthRoutes } from './routes/auth.routes.js';
 import { loadSession } from './middleware/auth.js';
 import carRoutes from './routes/car.routes.js';
 import bookingRoutes from './routes/booking.routes.js';
+import countryRoutes from './routes/country.routes.js';
+import locationRoutes from './routes/location.routes.js';
 
 export function createApp() {
   const app = express();
@@ -40,11 +42,13 @@ export function createApp() {
   });
   app.use('/api/cars', loadSession(config), carRoutes);
   app.use('/api/bookings', loadSession(config), bookingRoutes);
+  app.use('/api/countries', countryRoutes);
+  app.use('/api/locations', locationRoutes);
   app.get('/', (_req, res) => {
     res.json({
       message: 'Welcome to FUNCH Car Rental Backend API',
       endpoints: {
-        health: '/health', cars: '/api/cars', bookings: '/api/bookings',
+        health: '/health', countries: '/api/countries', locations: '/api/locations', cars: '/api/cars', bookings: '/api/bookings',
         calculatePrice: 'POST /api/bookings/calculate',
         register: 'POST /api/auth/register', login: 'POST /api/auth/login',
         logout: 'POST /api/auth/logout', session: 'GET /api/auth/session',
