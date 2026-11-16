@@ -1,0 +1,14 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "FUNCH PostgreSQL",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "funch_db",
+      "Username": "postgres",
+      "SSLMode": "prefer"
+    }
+  }
+}
+
