@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { BookingStatus } from '@prisma/client';
+import { BookingStatus, Prisma } from '@prisma/client';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import prisma from '../lib/prisma.js';
@@ -84,13 +84,47 @@ router.post('/calculate', requireJson, async (req, res, next) => {
 
 router.get('/', requireAdmin, async (req, res, next) => {
   try {
-    const status = z.nativeEnum(BookingStatus).optional().parse(req.query.status);
-    const bookings = await prisma.booking.findMany({ where: { status }, include: {
-      car: true, pickupLocation: true, dropoffLocation: true,
-      user: { select: { id: true, name: true, email: true, phoneNumber: true } },
-      approvedBy: { select: { id: true, name: true, email: true } },
-    }, orderBy: { createdAt: 'desc' } });
-    res.set('Cache-Control', 'no-store').json({ success: true, count: bookings.length, data: bookings });
+    const input = z.object({
+      status: z.union([z.nativeEnum(BookingStatus), z.literal('all')]).default('all'),
+      search: z.string().trim().max(254).default(''),
+      country: z.string().regex(/^(all|[A-Z]{2})$/).default('all'),
+      sort: z.enum(['newest', 'pickup', 'value']).default('newest'),
+      page: z.coerce.number().int().min(1).max(1_000_000).optional(),
+      pageSize: z.coerce.number().int().min(1).max(100).optional(),
+    }).parse(req.query);
+    const where: Prisma.BookingWhereInput = {
+      ...(input.status === 'all' ? {} : { status: input.status }),
+      ...(input.country === 'all' ? {} : { car: { country: input.country } }),
+      ...(input.search ? { OR: [
+        { bookingNumber: { contains: input.search, mode: 'insensitive' } },
+        { user: { OR: ['name', 'email', 'phoneNumber'].map((field) => ({ [field]: { contains: input.search, mode: 'insensitive' } })) } },
+        { car: { OR: ['brand', 'model', 'licensePlate'].map((field) => ({ [field]: { contains: input.search, mode: 'insensitive' } })) } },
+        { driverName: { contains: input.search, mode: 'insensitive' } },
+      ] } : {}),
+    };
+    const result = await prisma.$transaction(async (tx) => {
+      const total = await tx.booking.count({ where });
+      // Keep the existing unpaginated API contract for callers that omit pagination.
+      const paginated = input.page !== undefined || input.pageSize !== undefined;
+      const pageSize = input.pageSize ?? 10;
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      const page = Math.min(input.page ?? 1, totalPages);
+      const orderBy: Prisma.BookingOrderByWithRelationInput[] = input.sort === 'pickup'
+        ? [{ startDateTime: 'asc' }, { id: 'asc' }]
+        : input.sort === 'value' ? [{ totalPrice: 'desc' }, { id: 'asc' }] : [{ createdAt: 'desc' }, { id: 'asc' }];
+      const bookings = await tx.booking.findMany({ where, include: {
+        car: true, pickupLocation: true, dropoffLocation: true,
+        user: { select: { id: true, name: true, email: true, phoneNumber: true } },
+        approvedBy: { select: { id: true, name: true, email: true } },
+      }, orderBy, ...(paginated ? { skip: (page - 1) * pageSize, take: pageSize } : {}) });
+      const groups = await tx.booking.groupBy({ by: ['status'], _count: { _all: true } });
+      const summary = Object.fromEntries(Object.values(BookingStatus).map((status) =>
+        [status, groups.find((group) => group.status === status)?._count._all ?? 0]));
+      const countries = await tx.country.findMany({ select: { code: true, name: true, nameTh: true, flag: true }, orderBy: { name: 'asc' } });
+      return { data: bookings, count: total, summary, countries,
+        ...(paginated ? { pagination: { page, pageSize, total, totalPages } } : {}) };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    res.set('Cache-Control', 'no-store').json({ success: true, ...result });
   } catch (error) { next(error); }
 });
 
@@ -160,11 +194,17 @@ router.post('/', requireJson, bookingLimiter, async (req, res, next) => {
 
 router.patch('/:id/status', requireJson, requireAdmin, async (req, res, next) => {
   try {
-    const input = z.object({ status: z.nativeEnum(BookingStatus), adminNote: z.string().trim().max(2000).optional() }).strict().parse(req.body);
+    const { expectedUpdatedAt, ...input } = z.object({ status: z.nativeEnum(BookingStatus),
+      adminNote: z.string().trim().max(2000).optional(),
+      expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
+    }).strict().parse(req.body);
     const booking = await prisma.$transaction(async (tx) => {
       await lockFleet(tx);
       const old = await tx.booking.findUnique({ where: { id: req.params.id }, include: { car: true } });
       if (!old) return null;
+      if (expectedUpdatedAt && old.updatedAt.getTime() !== new Date(expectedUpdatedAt).getTime()) {
+        throw new RentalError(409, 'BOOKING_CHANGED');
+      }
       await tx.$queryRaw`SELECT id FROM cars WHERE id = ${old.carId} FOR UPDATE`;
       const car = await tx.car.findUniqueOrThrow({ where: { id: old.carId } });
       const allowed: Record<BookingStatus, BookingStatus[]> = {
@@ -194,7 +234,10 @@ router.patch('/:id/status', requireJson, requireAdmin, async (req, res, next) =>
     });
     if (!booking) { res.status(404).json({ success: false, message: 'Booking not found' }); return; }
     res.json({ success: true, data: booking });
-  } catch (error) { next(error); }
+  } catch (error) {
+    if (error instanceof RentalError) { res.status(error.status).json({ success: false, message: error.message }); return; }
+    next(error);
+  }
 });
 
 export default router;
