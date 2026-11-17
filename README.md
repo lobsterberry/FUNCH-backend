@@ -54,7 +54,7 @@ docker compose up -d --build
 npm run docker:up
 ```
 
-> **หมายเหตุ**: เมื่อรันครั้งแรก Container Backend จะรันคำสั่ง `prisma generate` และ `prisma db push` เพื่อ sync schema ไปยัง PostgreSQL ให้อัตโนมัติทันที
+> **หมายเหตุ**: Container Backend รัน `prisma generate` และ `prisma migrate deploy` ก่อนเริ่ม API เพื่อปรับ schema และ backfill ข้อมูลตาม migration
 
 ### 2. ดู Logs การทำงาน
 ```bash
@@ -113,3 +113,6 @@ docker compose down -v
 3. หากคืนรถ **เกิน 14:00 น.** จะคิดค่าบริการของวันนั้นเป็น **1 วันทันที**
 4. หากใช้งานข้ามวัน จะเริ่มนับรอบชั่วโมงใหม่หลังจากพ้นรอบ 24 ชั่วโมงจากเวลาเริ่มต้น
 
+# รถหลายคันต่อรุ่นและหลายสาขา
+
+ดู [คู่มือ Fleet และการย้ายข้อมูล](docs/fleet.md) สำหรับโครงสร้างใหม่ API วิธีสำรอง/ย้ายข้อมูล และคำสั่งทดสอบแบบแยกฐานข้อมูล

@@ -6,3 +6,5 @@ dist
 npm-debug.log
 README.md
 
+backups/
+.fleet-test-*/

@@ -1,11 +1,15 @@
 import { Router, Request, Response } from 'express';
+import { isDeepStrictEqual } from 'node:util';
 import prisma from '../lib/prisma.js';
 import { requireAdmin, requireJson } from '../middleware/auth.js';
 import { carInputSchema } from '../lib/car-input.js';
+import { attachLegacyCar, effectiveCar, inventoryInclude, lockFleet, modelData } from '../lib/fleet.js';
+import { fleetState, inventoryStatus } from '../lib/fleet-state.js';
 
 const router = Router();
 
 export function formatCar(car: any) {
+  car = effectiveCar(car);
   const brand = car.brand || '';
   const model = car.model || '';
   const fullName = brand && !model.startsWith(brand) ? `${brand} ${model}` : model;
@@ -30,6 +34,8 @@ export function formatCar(car: any) {
 
   return {
     id: car.id,
+    carModelLocationId: car.carModelLocationId,
+    carModelId: car.carModelLocation?.carModelId,
     brand: car.brand,
     name: fullName,
     model: `${fullName} ${car.year || 2024}`,
@@ -41,6 +47,8 @@ export function formatCar(car: any) {
     seats: car.seats ?? 4,
     bags: car.luggageCapacity ?? 2,
     gear: car.transmission || 'Automatic',
+    transmissionType: car.transmissionType,
+    categories: car.categories,
     fuel,
     steering: car.steeringSide === 'RHD' ? ('right' as const) : ('left' as const),
     day: Number(car.dailyRate),
@@ -55,6 +63,9 @@ export function formatCar(car: any) {
     color,
     featured: Boolean(car.isFeatured),
     isAvailable: car.isAvailable !== false,
+    operationalStatus: car.isAvailable === false && (!car.operationalStatus || car.operationalStatus === 'AVAILABLE') ? 'INACTIVE' : car.operationalStatus ?? 'AVAILABLE',
+    exteriorColor: car.exteriorColor ?? null, odometerKm: car.odometerKm ?? null, vin: car.vin ?? null,
+    availableFrom: car.availableFrom ?? null,
     licensePlate: car.licensePlate,
     locationId: car.locationId,
     location: car.location,
@@ -151,19 +162,18 @@ router.get('/admin', requireAdmin, async (_req, res, next) => {
     const now = new Date();
     const cars = await prisma.car.findMany({
       include: {
-        location: true, countryInfo: true,
+        ...inventoryInclude,
         bookings: {
-          where: { status: { in: ['PENDING', 'APPROVED'] }, endDateTime: { gt: now } },
-          select: { startDateTime: true },
+          where: { status: { in: ['PENDING', 'APPROVED'] } },
+          select: { status: true, startDateTime: true, endDateTime: true },
         },
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
     });
     res.set('Cache-Control', 'no-store').json({ success: true, data: cars.map((car) => ({
-      ...formatCar(car), rawModel: car.model, year: car.year, categories: car.categories,
-      transmissionType: car.transmissionType, featureCodes: car.featureCodes, options: car.options,
-      rentalStatus: car.bookings.some((booking) => booking.startDateTime <= now)
-        ? 'IN_USE' : car.bookings.length ? 'RESERVED' : 'IDLE',
+      ...formatCar(car), rawModel: effectiveCar(car).model, year: car.year, categories: effectiveCar(car).categories,
+      transmissionType: effectiveCar(car).transmissionType, featureCodes: effectiveCar(car).featureCodes, options: effectiveCar(car).options,
+      ...fleetState(car, now),
     })) });
   } catch (error) { next(error); }
 });
@@ -198,12 +208,11 @@ router.post('/', requireJson, requireAdmin, async (req, res, next) => {
       res.status(400).json({ success: false, message: 'Country and pickup location must match' });
       return;
     }
-    const car = await prisma.car.create({
-      data,
-      include: {
-        location: true,
-        countryInfo: true,
-      },
+    const car = await prisma.$transaction(async (tx) => {
+      await lockFleet(tx);
+      const created = await tx.car.create({ data: { ...data, operationalStatus: inventoryStatus(data.isAvailable) } });
+      await attachLegacyCar(tx, created);
+      return tx.car.findUniqueOrThrow({ where: { id: created.id }, include: inventoryInclude });
     });
 
     res.status(201).json({ success: true, data: formatCar(car) });
@@ -225,19 +234,24 @@ router.patch('/:id', requireJson, requireAdmin, async (req, res, next) => {
       return;
     }
     const car = await prisma.$transaction(async (tx) => {
+      await lockFleet(tx);
       // Share the reservation lock so a car cannot move while a booking is created.
       await tx.$queryRaw`SELECT id FROM cars WHERE id = ${req.params.id} FOR UPDATE`;
       const existing = await tx.car.findUnique({ where: { id: req.params.id } });
       if (!existing) throw new Error('CAR_NOT_FOUND');
+      if (existing.isAvailable && !data.isAvailable && await tx.booking.findFirst({ where: { carId: existing.id, status: { in: ['PENDING', 'APPROVED'] } } })) throw new Error('FLEET_BOOKED');
+      const changedSpecification = Object.entries(modelData(data)).some(([key, value]) => !isDeepStrictEqual((existing as any)[key], value));
+      if (changedSpecification && await tx.booking.findFirst({ where: { carId: existing.id, status: { in: ['PENDING', 'APPROVED'] } } })) throw new Error('FLEET_BOOKED');
       if (existing.country !== data.country || existing.locationId !== data.locationId) {
         const booking = await tx.booking.findFirst({ where: {
           carId: existing.id, status: { in: ['PENDING', 'APPROVED'] }, endDateTime: { gt: new Date() },
         } });
         if (booking) throw new Error('CAR_LOCATION_BOOKED');
       }
-      return tx.car.update({
-        where: { id: existing.id }, data, include: { location: true, countryInfo: true },
-      });
+      const updated = await tx.car.update({ where: { id: existing.id }, data: { ...data,
+        operationalStatus: inventoryStatus(data.isAvailable, undefined, existing.operationalStatus), carModelLocationId: null } });
+      await attachLegacyCar(tx, updated);
+      return tx.car.findUniqueOrThrow({ where: { id: existing.id }, include: inventoryInclude });
     });
     res.json({ success: true, data: formatCar(car) });
   } catch (error) {
