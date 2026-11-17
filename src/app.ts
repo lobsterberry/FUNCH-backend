@@ -12,6 +12,7 @@ import bookingRoutes from './routes/booking.routes.js';
 import countryRoutes from './routes/country.routes.js';
 import locationRoutes from './routes/location.routes.js';
 import fleetRoutes from './routes/fleet.routes.js';
+import memberRoutes from './routes/member.routes.js';
 
 export function createApp() {
   const app = express();
@@ -43,6 +44,7 @@ export function createApp() {
   });
   app.use('/api/cars', loadSession(config), carRoutes);
   app.use('/api/fleet', loadSession(config), fleetRoutes);
+  app.use('/api/admin/members', loadSession(config), memberRoutes);
   app.use('/api/bookings', loadSession(config), bookingRoutes);
   app.use('/api/countries', countryRoutes);
   app.use('/api/locations', locationRoutes);

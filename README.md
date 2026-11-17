@@ -116,3 +116,18 @@ docker compose down -v
 # รถหลายคันต่อรุ่นและหลายสาขา
 
 ดู [คู่มือ Fleet และการย้ายข้อมูล](docs/fleet.md) สำหรับโครงสร้างใหม่ API วิธีสำรอง/ย้ายข้อมูล และคำสั่งทดสอบแบบแยกฐานข้อมูล
+
+## จัดการสมาชิกสำหรับผู้ดูแลระบบ
+
+ทุก endpoint ใช้ Auth.js session และตรวจสิทธิ์ `ADMIN` โดยไม่ส่ง password hash หรือ session version กลับในข้อมูลสมาชิก
+
+| Method | Endpoint | การทำงาน |
+| --- | --- | --- |
+| GET | `/api/admin/members` | รายชื่อและสถิติ รองรับ `search`, `role=all/USER/ADMIN`, `status=all/active/suspended`, `page`, `pageSize` (1–100) |
+| POST | `/api/admin/members` | สร้างบัญชีด้วย `name`, `email`, `phoneNumber` (หรือ `null`), `role`, `isActive`, `password` (8–128 ตัวอักษร) |
+| GET | `/api/admin/members/:id` | ข้อมูลสมาชิกและประวัติการจอง แบ่งหน้าด้วย `page`, `pageSize` |
+| PATCH | `/api/admin/members/:id` | แก้ไขข้อมูลติดต่อ สิทธิ์ หรือสถานะ โดยส่งเฉพาะฟิลด์ที่ต้องการแก้ไข |
+
+ยอดรวมคิดจากรายการจองสถานะ `APPROVED` และ `COMPLETED` เท่านั้น การเปลี่ยนสิทธิ์หรือระงับบัญชีจะเพิ่ม `sessionVersion` เพื่อยกเลิกเซสชันเดิมทุกอุปกรณ์ และไม่ยกเลิกประวัติหรือรายการจอง สมาชิกที่เปิดใช้งานใหม่ต้องเข้าสู่ระบบอีกครั้ง ไม่สามารถลดสิทธิ์หรือระงับบัญชีของตนเองได้ และตรวจสิทธิ์ผู้แก้ไขซ้ำใน transaction หลังรอการแก้ไขจากแอดมินคนอื่น
+
+หน้าเว็บอยู่ที่ `/admin/members` ใช้ schema เดิม จึงไม่มี migration เพิ่ม ทดสอบ HTTP flow รวมการเพิกถอนเซสชันและคำขอพร้อมกันใน `tests/admin-members.integration.test.ts` ผ่าน `npm run test:fleet` ซึ่งแยก schema ทดสอบและลบหลังทดสอบเสร็จ
