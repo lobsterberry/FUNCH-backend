@@ -6,61 +6,91 @@ import prisma from '../lib/prisma.js';
 import { registrationSchema, registrationData } from '../lib/registration.js';
 import { requireAdmin, requireJson } from '../middleware/auth.js';
 import { calculateCarRentalPrice } from '../utils/pricing.js';
+import { candidateCars, canSchedule, effectiveCar, inventoryInclude, lockFleet, offerInclude,
+  reservedStatuses, validItinerary, type FleetTx } from '../lib/fleet.js';
 
 const router = Router();
-const rentalSchema = z.object({
-  carId: z.string().min(1),
-  startDateTime: z.string().datetime({ offset: true }),
-  endDateTime: z.string().datetime({ offset: true }),
-}).refine((data) => new Date(data.endDateTime) > new Date(data.startDateTime), {
-  message: 'Return time must be after pickup time', path: ['endDateTime'],
-});
-const bookingSchema = z.object({
-  carId: z.string().min(1),
-  startDateTime: z.string().datetime({ offset: true }),
-  endDateTime: z.string().datetime({ offset: true }),
-  registerUser: registrationSchema.optional(),
-  userId: z.string().min(1).optional(),
+const rentalFields = {
+  carId: z.string().min(1).optional(), carModelLocationId: z.string().min(1).optional(),
+  startDateTime: z.string().datetime({ offset: true }), endDateTime: z.string().datetime({ offset: true }),
+  pickupLocationId: z.string().min(1).optional(), dropoffLocationId: z.string().min(1).optional(),
+};
+const validateRental = (data: { carId?: string; carModelLocationId?: string; startDateTime: string; endDateTime: string }) =>
+  Boolean(data.carId) !== Boolean(data.carModelLocationId) && new Date(data.endDateTime) > new Date(data.startDateTime);
+const rentalSchema = z.object(rentalFields).refine(validateRental, { message: 'Select one car or offer and a valid rental period' });
+const bookingSchema = z.object({ ...rentalFields,
+  registerUser: registrationSchema.optional(), userId: z.string().min(1).optional(),
   driverName: z.string().trim().min(1).max(100).optional(),
   internationalDrivingPermit: z.string().trim().min(1).max(100).optional(),
-  pickupLocationId: z.string().min(1).optional(),
-  dropoffLocationId: z.string().min(1).optional(),
-}).strict();
+  quotedTotal: z.number().finite().nonnegative().optional(),
+}).strict().refine(validateRental, { message: 'Select one car or offer and a valid rental period' });
 const bookingLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: 'draft-7', legacyHeaders: false,
   message: { success: false, message: 'Too many booking attempts. Please try again later.' },
 });
 
+class RentalError extends Error {
+  constructor(public status: number, message: string) { super(message); }
+}
+type RentalInput = z.infer<typeof rentalSchema>;
+async function rentalSelection(tx: FleetTx, input: RentalInput) {
+  const physical = input.carId ? await tx.car.findUnique({ where: { id: input.carId }, include: inventoryInclude }) : null;
+  let offer = input.carModelLocationId
+    ? await tx.carModelLocation.findUnique({ where: { id: input.carModelLocationId }, include: offerInclude }) : null;
+  if (physical?.carModelLocation && physical.locationId) {
+    offer = await tx.carModelLocation.findFirst({ where: { carModelId: physical.carModelLocation.carModelId,
+      providerName: physical.carModelLocation.providerName, locationId: physical.locationId, isActive: true },
+      include: offerInclude, orderBy: { id: 'asc' } });
+    if (!offer) throw new RentalError(409, 'Car is unavailable');
+  }
+  if (!physical && !offer) throw new RentalError(404, 'Car or offer not found');
+  if (physical && (!physical.isAvailable || physical.operationalStatus !== 'AVAILABLE') || offer && !offer.isActive) throw new RentalError(409, 'Car is unavailable');
+  const selected = offer ?? effectiveCar(physical);
+  const pickupLocationId = offer?.locationId ?? physical?.locationId;
+  if (!pickupLocationId || input.pickupLocationId && input.pickupLocationId !== pickupLocationId) {
+    throw new RentalError(400, 'Pickup location does not match the car');
+  }
+  const pickup = await tx.location.findUniqueOrThrow({ where: { id: pickupLocationId } });
+  const dropoffLocationId = input.dropoffLocationId || pickup.id;
+  const dropoff = await tx.location.findUnique({ where: { id: dropoffLocationId } });
+  if (!dropoff || dropoff.countryCode !== pickup.countryCode) throw new RentalError(400, 'Invalid dropoff location');
+  const modelId = offer?.carModelId ?? physical?.carModelLocation?.carModelId;
+  if (dropoff.id !== pickup.id && (!modelId || !await tx.carModelLocation.findFirst({ where: {
+    carModelId: modelId, locationId: dropoff.id, providerName: selected.providerName, isActive: true,
+  } }))) throw new RentalError(400, 'This model cannot be returned at the selected location');
+  const turnaroundMinutes = offer?.turnaroundMinutes ?? physical?.carModelLocation?.turnaroundMinutes ?? 0;
+  const request = { startDateTime: new Date(input.startDateTime), endDateTime: new Date(input.endDateTime),
+    pickupLocationId: pickup.id, dropoffLocationId: dropoff.id, turnaroundMinutes };
+  const pricing = calculateCarRentalPrice({ ...input, hourlyRate: Number(selected.hourlyRate),
+    dailyRate: Number(selected.dailyRate), timeZone: pickup.timeZone });
+  return { physical, offer, selected, pickup, dropoff, request, pricing };
+}
+
 router.post('/calculate', requireJson, async (req, res, next) => {
   try {
     const input = rentalSchema.parse(req.body);
-    const car = await prisma.car.findUnique({ where: { id: input.carId }, include: { location: true } });
-    if (!car) { res.status(404).json({ success: false, message: 'Car not found' }); return; }
-    const result = calculateCarRentalPrice({
-      ...input, hourlyRate: Number(car.hourlyRate), dailyRate: Number(car.dailyRate),
-      timeZone: car.location?.timeZone || 'UTC',
+    const result = await prisma.$transaction(async (tx) => {
+      const { selected, offer, physical, pricing } = await rentalSelection(tx, input);
+      return { car: { id: physical?.id ?? offer!.id,
+        name: offer ? `${offer.carModel.brand} ${offer.carModel.model}` : `${selected.brand} ${selected.model}`,
+        hourlyRate: selected.hourlyRate, dailyRate: selected.dailyRate }, calculation: pricing };
     });
-    res.json({ success: true, data: {
-      car: { id: car.id, name: `${car.brand} ${car.model}`, hourlyRate: car.hourlyRate, dailyRate: car.dailyRate },
-      calculation: result,
-    } });
-  } catch (error) { next(error); }
+    res.json({ success: true, data: result });
+  } catch (error) {
+    if (error instanceof RentalError) { res.status(error.status).json({ success: false, message: error.message }); return; }
+    next(error);
+  }
 });
 
-// Booking lists and approvals are restricted to administrators.
 router.get('/', requireAdmin, async (req, res, next) => {
   try {
     const status = z.nativeEnum(BookingStatus).optional().parse(req.query.status);
-    const bookings = await prisma.booking.findMany({
-      where: { status },
-      include: {
-        car: true,
-        user: { select: { id: true, name: true, email: true, phoneNumber: true } },
-        approvedBy: { select: { id: true, name: true, email: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    res.json({ success: true, count: bookings.length, data: bookings });
+    const bookings = await prisma.booking.findMany({ where: { status }, include: {
+      car: true, pickupLocation: true, dropoffLocation: true,
+      user: { select: { id: true, name: true, email: true, phoneNumber: true } },
+      approvedBy: { select: { id: true, name: true, email: true } },
+    }, orderBy: { createdAt: 'desc' } });
+    res.set('Cache-Control', 'no-store').json({ success: true, count: bookings.length, data: bookings });
   } catch (error) { next(error); }
 });
 
@@ -77,78 +107,92 @@ router.post('/', requireJson, bookingLimiter, async (req, res, next) => {
     if (memberId && input.registerUser) {
       res.status(400).json({ success: false, message: 'Signed-in users must omit registerUser' }); return;
     }
-    rentalSchema.parse(input);
     if (new Date(input.startDateTime).getTime() <= Date.now()) {
       res.status(400).json({ success: false, message: 'Pickup must be in the future' }); return;
     }
-    const car = await prisma.car.findUnique({ where: { id: input.carId }, include: { location: true } });
-    if (!car) { res.status(404).json({ success: false, message: 'Car not found' }); return; }
-    if (!car.isAvailable) { res.status(409).json({ success: false, message: 'Car is unavailable' }); return; }
-    if (input.pickupLocationId && input.pickupLocationId !== car.locationId) {
-      res.status(400).json({ success: false, message: 'Pickup location does not match the car' }); return;
-    }
-    const dropoffLocationId = input.dropoffLocationId || car.locationId;
-    if (dropoffLocationId && !await prisma.location.findFirst({ where: { id: dropoffLocationId, countryCode: car.country } })) {
-      res.status(400).json({ success: false, message: 'Invalid dropoff location' }); return;
-    }
-    const pricing = calculateCarRentalPrice({
-      ...input, hourlyRate: Number(car.hourlyRate), dailyRate: Number(car.dailyRate),
-      timeZone: car.location?.timeZone || 'UTC',
-    });
+    const expectedCar = input.carId ? await prisma.car.findUnique({ where: { id: input.carId } }) : null;
     const newUserData = input.registerUser ? await registrationData(input.registerUser) : undefined;
-    // Roll back registration as well if creating the booking fails.
     const booking = await prisma.$transaction(async (tx) => {
-      // Serialize reservations for one car so concurrent requests cannot double-book.
-      await tx.$queryRaw`SELECT id FROM cars WHERE id = ${car.id} FOR UPDATE`;
-      const currentCar = await tx.car.findUnique({ where: { id: car.id } });
-      if (!currentCar?.isAvailable || currentCar.updatedAt.getTime() !== car.updatedAt.getTime()) {
-        throw new Error('CAR_CHANGED');
+      await lockFleet(tx);
+      if (input.carId) await tx.$queryRaw`SELECT id FROM cars WHERE id = ${input.carId} FOR UPDATE`;
+      if (input.carId && expectedCar) {
+        const current = await tx.car.findUnique({ where: { id: input.carId } });
+        if (!current || current.updatedAt.getTime() !== expectedCar.updatedAt.getTime()) {
+          throw new RentalError(409, 'Car details changed; please refresh and try again');
+        }
       }
-      const overlap = await tx.booking.findFirst({ where: {
-        carId: car.id, status: { in: ['PENDING', 'APPROVED'] },
-        startDateTime: { lt: new Date(input.endDateTime) },
-        endDateTime: { gt: new Date(input.startDateTime) },
-      } });
-      if (overlap) throw new Error('BOOKING_CONFLICT');
+      const { physical, offer, pickup, dropoff, request, pricing, selected } = await rentalSelection(tx, input);
+      if (input.quotedTotal !== undefined && Math.abs(input.quotedTotal - pricing.totalPrice) > 0.005) throw new RentalError(409, 'PRICE_CHANGED');
+      if (physical && expectedCar && expectedCar.updatedAt.getTime() !== physical.updatedAt.getTime()) throw new Error('CAR_CHANGED');
+      const candidates = physical ? [physical] : await candidateCars(tx, offer!);
+      let allocated: typeof candidates[number] | null = null;
+      for (const candidate of candidates) {
+        await tx.$queryRaw`SELECT id FROM cars WHERE id = ${candidate.id} FOR UPDATE`;
+        const current = await tx.car.findUniqueOrThrow({ where: { id: candidate.id }, include: inventoryInclude });
+        if (!current.isAvailable || current.operationalStatus !== 'AVAILABLE' || current.updatedAt.getTime() !== candidate.updatedAt.getTime()) continue;
+        const rentals = await tx.booking.findMany({ where: { carId: current.id, status: { in: [...reservedStatuses] } } });
+        if (canSchedule(current.locationId, rentals, request, current.availableFrom)) { allocated = current; break; }
+      }
+      if (!allocated) throw new RentalError(409, 'No car is available for these dates and locations');
+      const specification = offer?.carModel ?? effectiveCar(allocated);
       const userId = memberId ?? (await tx.user.create({ data: newUserData! })).id;
-      return tx.booking.create({
-        data: {
-          userId, carId: car.id,
-          startDateTime: new Date(input.startDateTime), endDateTime: new Date(input.endDateTime),
-          calculatedDays: pricing.days, calculatedHours: pricing.hours,
-          totalPrice: pricing.totalPrice, pricingDetails: { breakdown: pricing.breakdown },
-          hourlyRate: car.hourlyRate, dailyRate: car.dailyRate, currencyCode: car.currencyCode,
-          status: 'PENDING', source: newUserData ? 'REGISTER_AND_BOOK' : 'EXISTING_MEMBER',
-          timeZone: car.location?.timeZone || 'UTC',
-          pickupLocationId: car.locationId, dropoffLocationId,
-          driverName: input.driverName, internationalDrivingPermit: input.internationalDrivingPermit,
-        },
-        include: { car: true, user: { select: { id: true, name: true, email: true } } },
-      });
-    });
+      return tx.booking.create({ data: {
+        userId, carId: allocated.id, carModelLocationId: offer?.id ?? allocated.carModelLocationId,
+        ...request, calculatedDays: pricing.days, calculatedHours: pricing.hours,
+        totalPrice: pricing.totalPrice, pricingDetails: { breakdown: pricing.breakdown },
+        hourlyRate: selected.hourlyRate, dailyRate: selected.dailyRate, currencyCode: selected.currencyCode,
+        timeZone: pickup.timeZone, status: 'PENDING', source: newUserData ? 'REGISTER_AND_BOOK' : 'EXISTING_MEMBER',
+        driverName: input.driverName, internationalDrivingPermit: input.internationalDrivingPermit,
+        carSnapshot: { brand: specification.brand, model: specification.model, year: allocated.year,
+          licensePlate: allocated.licensePlate, providerName: selected.providerName || 'FUNCH Rental',
+          seats: specification.seats, transmission: specification.transmission, fuelType: specification.fuelType,
+          steeringSide: specification.steeringSide, pickupLocationId: pickup.id, pickupLocationName: pickup.name,
+          pickupTimeZone: pickup.timeZone, dropoffLocationId: dropoff.id, dropoffLocationName: dropoff.name,
+          dropoffTimeZone: dropoff.timeZone },
+      }, include: { car: true, user: { select: { id: true, name: true, email: true } } } });
+    }, { maxWait: 10_000, timeout: 20_000 });
     res.status(201).json({ success: true, data: booking });
   } catch (error) {
-    if (error instanceof Error && error.message === 'CAR_CHANGED') {
-      res.status(409).json({ success: false, message: 'Car details changed; please refresh and try again' }); return;
-    }
-    if (error instanceof Error && error.message === 'BOOKING_CONFLICT') {
-      res.status(409).json({ success: false, message: 'Car is already booked for these dates' }); return;
-    }
+    if (error instanceof RentalError) { res.status(error.status).json({ success: false, message: error.message }); return; }
     next(error);
   }
 });
 
 router.patch('/:id/status', requireJson, requireAdmin, async (req, res, next) => {
   try {
-    const input = z.object({
-      status: z.nativeEnum(BookingStatus), adminNote: z.string().trim().max(2000).optional(),
-    }).strict().parse(req.body);
-    const booking = await prisma.booking.update({
-      where: { id: req.params.id },
-      data: {
+    const input = z.object({ status: z.nativeEnum(BookingStatus), adminNote: z.string().trim().max(2000).optional() }).strict().parse(req.body);
+    const booking = await prisma.$transaction(async (tx) => {
+      await lockFleet(tx);
+      const old = await tx.booking.findUnique({ where: { id: req.params.id }, include: { car: true } });
+      if (!old) return null;
+      await tx.$queryRaw`SELECT id FROM cars WHERE id = ${old.carId} FOR UPDATE`;
+      const car = await tx.car.findUniqueOrThrow({ where: { id: old.carId } });
+      const allowed: Record<BookingStatus, BookingStatus[]> = {
+        PENDING: ['APPROVED', 'REJECTED', 'CANCELLED'], APPROVED: ['CANCELLED', 'COMPLETED'],
+        REJECTED: ['PENDING', 'APPROVED'], CANCELLED: ['PENDING', 'APPROVED'], COMPLETED: [],
+      };
+      if (input.status !== old.status && !allowed[old.status].includes(input.status)) throw new Error('INVALID_TRANSITION');
+      const others = await tx.booking.findMany({ where: { carId: old.carId, id: { not: old.id }, status: { in: [...reservedStatuses] } } });
+      const blocking = reservedStatuses.includes(input.status as typeof reservedStatuses[number]);
+      const wasBlocking = reservedStatuses.includes(old.status as typeof reservedStatuses[number]);
+      if (blocking && (!car.isAvailable || car.operationalStatus !== 'AVAILABLE' || !wasBlocking && old.startDateTime <= new Date())) throw new Error('SCHEDULE_CONFLICT');
+      if (blocking && others.some((rental) => rental.endDateTime <= new Date())) throw new Error('SCHEDULE_CONFLICT');
+      let locationId = car.locationId;
+      let availableFrom = car.availableFrom;
+      if (input.status === 'COMPLETED' && old.status !== 'COMPLETED') {
+        if (old.endDateTime > new Date() || !old.dropoffLocationId || others.some((r) => r.startDateTime < old.endDateTime)) throw new Error('INVALID_TRANSITION');
+        locationId = old.dropoffLocationId;
+        availableFrom = new Date(Date.now() + old.turnaroundMinutes * 60_000);
+        await tx.carMovement.create({ data: { carId: old.carId, bookingId: old.id,
+          fromLocationId: car.locationId, toLocationId: locationId, reason: 'RENTAL_RETURN' } });
+        await tx.car.update({ where: { id: old.carId }, data: { locationId, availableFrom } });
+      }
+      if (!validItinerary(locationId, blocking ? [...others, old] : others, availableFrom)) throw new Error('SCHEDULE_CONFLICT');
+      return tx.booking.update({ where: { id: old.id }, data: {
         ...input, approvedById: res.locals.session.user.id, reviewedAt: new Date(),
-      },
+      } });
     });
+    if (!booking) { res.status(404).json({ success: false, message: 'Booking not found' }); return; }
     res.json({ success: true, data: booking });
   } catch (error) { next(error); }
 });

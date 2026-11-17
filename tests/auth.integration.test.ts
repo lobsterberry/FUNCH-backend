@@ -141,7 +141,7 @@ test('Auth.js HTTP flow with PostgreSQL', { skip: !process.env.AUTH_TEST_DATABAS
       assert.equal((await member.request('/api/auth/me')).response.status, 401);
     });
     await t.test('register-and-book hashes the guest password and assigns the booking owner', async () => {
-      const car = await prisma.car.findFirstOrThrow({ where: { isAvailable: true } });
+      const car = await prisma.car.findFirstOrThrow({ where: { isAvailable: true, locationId: { not: null }, id: { startsWith: 'seed-' }, bookings: { none: {} } } });
       const result = await anonymous.request('/api/bookings', 'POST', {
         carId: car.id, startDateTime: '2026-12-01T10:00:00Z', endDateTime: '2026-12-01T12:00:00Z',
         registerUser: { email: guestEmail, name: 'Test Guest', password },

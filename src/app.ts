@@ -11,6 +11,7 @@ import carRoutes from './routes/car.routes.js';
 import bookingRoutes from './routes/booking.routes.js';
 import countryRoutes from './routes/country.routes.js';
 import locationRoutes from './routes/location.routes.js';
+import fleetRoutes from './routes/fleet.routes.js';
 
 export function createApp() {
   const app = express();
@@ -41,6 +42,7 @@ export function createApp() {
     }
   });
   app.use('/api/cars', loadSession(config), carRoutes);
+  app.use('/api/fleet', loadSession(config), fleetRoutes);
   app.use('/api/bookings', loadSession(config), bookingRoutes);
   app.use('/api/countries', countryRoutes);
   app.use('/api/locations', locationRoutes);
@@ -62,6 +64,10 @@ export function createApp() {
       res.status(400).json({ success: false, message: 'Invalid request data', errors: error.flatten() });
     } else if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       res.status(409).json({ success: false, message: 'A record with these details already exists' });
+    } else if (['FLEET_BOOKED', 'OFFER_IDENTITY', 'SCHEDULE_CONFLICT', 'INVALID_TRANSITION', 'CAR_CHANGED', 'INVALID_TRANSFER'].includes(error?.message)) {
+      res.status(409).json({ success: false, message: error.message });
+    } else if (error?.message === 'INVALID_OFFER') {
+      res.status(400).json({ success: false, message: 'Invalid offer' });
     } else if (error?.type === 'entity.parse.failed') {
       res.status(400).json({ success: false, message: 'Invalid JSON body' });
     } else if (error?.type === 'entity.too.large') {

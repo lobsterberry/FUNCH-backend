@@ -11,3 +11,5 @@ coverage/
  Assignment.md
  AGENTS.md
 
+/.fleet-test-*/
+/backups/

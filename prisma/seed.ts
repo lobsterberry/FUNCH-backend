@@ -1,8 +1,10 @@
 import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { randomBytes, scryptSync } from 'node:crypto';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, type VehicleStatus } from '@prisma/client';
 import { bookings, cars, countries, featureLabels, locations, pricingExamples, users } from './seed-data.js';
+import { attachLegacyCar, lockFleet } from '../src/lib/fleet.js';
+import { expandDemoFleet, fleetExpansionPlan } from './fleet-seed.js';
 
 function validateData() {
   for (const rows of [countries.map((row) => row.code), locations.map((row) => row.id), cars.map((row) => row.id), users.map((row) => row.id), bookings.map((row) => row.bookingNumber)]) {
@@ -41,7 +43,9 @@ function validateData() {
 
 async function main() {
   validateData();
-  const summary = { countries: countries.length, locations: locations.length, cars: cars.length, users: users.length, bookings: bookings.length };
+  const summary = { countries: countries.length, locations: locations.length,
+    cars: cars.length + fleetExpansionPlan.reduce((total, group) => total + group.units.length, 0),
+    users: users.length, bookings: bookings.length };
   if (process.argv.includes('--dry-run')) {
     console.log('Seed data validated (no database writes):', summary);
     console.table(pricingExamples.map(({ key, days, hours, total }) => ({ example: key, days, hours, THB: total })));
@@ -53,7 +57,8 @@ async function main() {
   const prisma = new PrismaClient();
   try {
     // Stable IDs + upsert refresh only demo rows. Never delete application data.
-    await prisma.$transaction(async (tx) => {
+    const expansion = await prisma.$transaction(async (tx) => {
+      await lockFleet(tx);
       for (const country of countries) {
         await tx.country.upsert({ where: { code: country.code }, create: country, update: country });
       }
@@ -70,13 +75,16 @@ async function main() {
         await tx.user.upsert({ where: { id: user.id }, create: { ...user, password, createdAt }, update: user });
       }
       for (const vehicle of cars) {
-        await tx.car.upsert({ where: { id: vehicle.id }, create: vehicle, update: vehicle });
+        const values = { ...vehicle, operationalStatus: (vehicle.isAvailable ? 'AVAILABLE' : 'INACTIVE') as VehicleStatus };
+        const saved = await tx.car.upsert({ where: { id: vehicle.id }, create: values, update: values });
+        await attachLegacyCar(tx, saved);
       }
       for (const booking of bookings) {
         await tx.booking.upsert({ where: { id: booking.id }, create: booking, update: booking });
       }
+      return expandDemoFleet(tx);
     }, { timeout: 60000 });
-    console.log('Seed complete:', summary);
+    console.log('Seed complete:', summary, expansion);
   } finally {
     await prisma.$disconnect();
   }
