@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../lib/prisma.js';
 import { requireAdmin, requireJson } from '../middleware/auth.js';
+import { carInputSchema } from '../lib/car-input.js';
 
 const router = Router();
 
@@ -144,6 +145,29 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
+// Administrative inventory includes live booking state and unformatted edit values.
+router.get('/admin', requireAdmin, async (_req, res, next) => {
+  try {
+    const now = new Date();
+    const cars = await prisma.car.findMany({
+      include: {
+        location: true, countryInfo: true,
+        bookings: {
+          where: { status: { in: ['PENDING', 'APPROVED'] }, endDateTime: { gt: now } },
+          select: { startDateTime: true },
+        },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+    });
+    res.set('Cache-Control', 'no-store').json({ success: true, data: cars.map((car) => ({
+      ...formatCar(car), rawModel: car.model, year: car.year, categories: car.categories,
+      transmissionType: car.transmissionType, featureCodes: car.featureCodes, options: car.options,
+      rentalStatus: car.bookings.some((booking) => booking.startDateTime <= now)
+        ? 'IN_USE' : car.bookings.length ? 'RESERVED' : 'IDLE',
+    })) });
+  } catch (error) { next(error); }
+});
+
 // GET /api/cars/:id - ดูรายละเอียดรถคนนั้นทั้งหมด
 router.get('/:id', async (req: Request, res: Response) => {
   try {
@@ -167,44 +191,15 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // POST /api/cars - เพิ่มข้อมูลรถ (สำหรับระบบหลังบ้าน Admin)
-router.post('/', requireJson, requireAdmin, async (req: Request, res: Response) => {
+router.post('/', requireJson, requireAdmin, async (req, res, next) => {
   try {
-    const {
-      brand,
-      model,
-      year,
-      licensePlate,
-      country,
-      hourlyRate,
-      dailyRate,
-      seats,
-      transmission,
-      fuelType,
-      imageUrl,
-      options,
-      locationId,
-      categories,
-      categoryLabel,
-    } = req.body;
-
+    const data = carInputSchema.parse(req.body);
+    if (!await validCarLocation(data.country, data.locationId)) {
+      res.status(400).json({ success: false, message: 'Country and pickup location must match' });
+      return;
+    }
     const car = await prisma.car.create({
-      data: {
-        brand,
-        model,
-        year: Number(year),
-        licensePlate,
-        country: country.toUpperCase(),
-        hourlyRate: Number(hourlyRate),
-        dailyRate: Number(dailyRate),
-        seats: seats ? Number(seats) : 4,
-        transmission: transmission || 'Automatic',
-        fuelType: fuelType || 'Gasoline',
-        imageUrl,
-        options,
-        locationId,
-        categories: categories || [],
-        categoryLabel,
-      },
+      data,
       include: {
         location: true,
         countryInfo: true,
@@ -212,8 +207,47 @@ router.post('/', requireJson, requireAdmin, async (req: Request, res: Response) 
     });
 
     res.status(201).json({ success: true, data: formatCar(car) });
-  } catch (error: any) {
-    res.status(400).json({ success: false, message: error.message });
+  } catch (error) { next(error); }
+});
+
+async function validCarLocation(country: string, locationId: string | null) {
+  if (!await prisma.country.findUnique({ where: { code: country } })) return false;
+  if (!locationId) return true;
+  const location = await prisma.location.findUnique({ where: { id: locationId } });
+  return location?.countryCode === country;
+}
+
+router.patch('/:id', requireJson, requireAdmin, async (req, res, next) => {
+  try {
+    const data = carInputSchema.parse(req.body);
+    if (!await validCarLocation(data.country, data.locationId)) {
+      res.status(400).json({ success: false, message: 'Country and pickup location must match' });
+      return;
+    }
+    const car = await prisma.$transaction(async (tx) => {
+      // Share the reservation lock so a car cannot move while a booking is created.
+      await tx.$queryRaw`SELECT id FROM cars WHERE id = ${req.params.id} FOR UPDATE`;
+      const existing = await tx.car.findUnique({ where: { id: req.params.id } });
+      if (!existing) throw new Error('CAR_NOT_FOUND');
+      if (existing.country !== data.country || existing.locationId !== data.locationId) {
+        const booking = await tx.booking.findFirst({ where: {
+          carId: existing.id, status: { in: ['PENDING', 'APPROVED'] }, endDateTime: { gt: new Date() },
+        } });
+        if (booking) throw new Error('CAR_LOCATION_BOOKED');
+      }
+      return tx.car.update({
+        where: { id: existing.id }, data, include: { location: true, countryInfo: true },
+      });
+    });
+    res.json({ success: true, data: formatCar(car) });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'CAR_NOT_FOUND') {
+      res.status(404).json({ success: false, message: 'Car not found' }); return;
+    }
+    if (error instanceof Error && error.message === 'CAR_LOCATION_BOOKED') {
+      res.status(409).json({ success: false, message: 'Car has upcoming bookings; location cannot change' }); return;
+    }
+    next(error);
   }
 });
 

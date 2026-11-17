@@ -100,6 +100,10 @@ router.post('/', requireJson, bookingLimiter, async (req, res, next) => {
     const booking = await prisma.$transaction(async (tx) => {
       // Serialize reservations for one car so concurrent requests cannot double-book.
       await tx.$queryRaw`SELECT id FROM cars WHERE id = ${car.id} FOR UPDATE`;
+      const currentCar = await tx.car.findUnique({ where: { id: car.id } });
+      if (!currentCar?.isAvailable || currentCar.updatedAt.getTime() !== car.updatedAt.getTime()) {
+        throw new Error('CAR_CHANGED');
+      }
       const overlap = await tx.booking.findFirst({ where: {
         carId: car.id, status: { in: ['PENDING', 'APPROVED'] },
         startDateTime: { lt: new Date(input.endDateTime) },
@@ -124,6 +128,9 @@ router.post('/', requireJson, bookingLimiter, async (req, res, next) => {
     });
     res.status(201).json({ success: true, data: booking });
   } catch (error) {
+    if (error instanceof Error && error.message === 'CAR_CHANGED') {
+      res.status(409).json({ success: false, message: 'Car details changed; please refresh and try again' }); return;
+    }
     if (error instanceof Error && error.message === 'BOOKING_CONFLICT') {
       res.status(409).json({ success: false, message: 'Car is already booked for these dates' }); return;
     }

@@ -9,6 +9,7 @@ import { hashPassword, verifyPassword } from './utils/password.js';
 const credentialsSchema = z.object({
   email: emailSchema,
   password: z.string().min(1).max(128),
+  scope: z.enum(['admin']).optional(),
 });
 // Equalize the expensive password check for missing, inactive and valid users.
 const dummyPassword = hashPassword('unused-password');
@@ -26,13 +27,14 @@ export function createAuthConfig(): ExpressAuthConfig {
     useSecureCookies: authUrl.protocol === 'https:',
     session: { strategy: 'jwt', maxAge: 60 * 60 * 24 },
     providers: [Credentials({
-      credentials: { email: { type: 'email' }, password: { type: 'password' } },
+      credentials: { email: { type: 'email' }, password: { type: 'password' }, scope: { type: 'text' } },
       async authorize(credentials) {
         const parsed = credentialsSchema.safeParse(credentials);
         if (!parsed.success) return null;
         const user = await prisma.user.findUnique({ where: { email: parsed.data.email } });
         const valid = await verifyPassword(parsed.data.password, user?.password ?? await dummyPassword);
         if (!user || !user.isActive || !valid) return null;
+        if (parsed.data.scope === 'admin' && user.role !== 'ADMIN') return null;
         return {
           id: user.id, email: user.email, name: user.name,
           role: user.role, sessionVersion: user.sessionVersion,
