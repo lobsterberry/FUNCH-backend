@@ -12,6 +12,7 @@ export interface PricingInput {
   endDateTime: Date | string;
   hourlyRate: number;
   dailyRate: number;
+  timeZone?: string;
 }
 
 export interface PricingResult {
@@ -25,7 +26,7 @@ export function calculateCarRentalPrice(input: PricingInput): PricingResult {
   const start = new Date(input.startDateTime);
   const end = new Date(input.endDateTime);
 
-  if (end <= start) {
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
     throw new Error('End date/time must be after start date/time');
   }
 
@@ -35,14 +36,21 @@ export function calculateCarRentalPrice(input: PricingInput): PricingResult {
   let days = 0;
   let hours = 0;
 
-  // ตรวจสอบว่าเป็นวันเดียวกันหรือไม่
+  const clock = (value: Date) => {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+      timeZone: input.timeZone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).formatToParts(value).map(({ type, value }) => [type, value]));
+    return { date: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) + Number(parts.minute) / 60 };
+  };
+  const localStart = clock(start);
+  const localEnd = clock(end);
+  // Apply the 14:00 rule at the pickup location, independent of server timezone.
   const isSameDay =
-    start.getFullYear() === end.getFullYear() &&
-    start.getMonth() === end.getMonth() &&
-    start.getDate() === end.getDate();
+    localStart.date === localEnd.date;
 
   if (isSameDay) {
-    const endHour = end.getHours() + end.getMinutes() / 60;
+    const endHour = localEnd.hour;
     // Rule: คืนเกิน 14.00 น. หรือ เกิน 8 ชม. นับเป็น 1 วัน
     if (endHour > 14 || diffHours > 8) {
       days = 1;
@@ -64,7 +72,7 @@ export function calculateCarRentalPrice(input: PricingInput): PricingResult {
       hours = 0;
     } else {
       // ตรวจสอบเวลาคืนในวันสุดท้าย ถ้าเกิน 14.00 น. นับเป็น 1 วัน
-      const endHour = end.getHours() + end.getMinutes() / 60;
+      const endHour = localEnd.hour;
       if (endHour > 14 && remainingHours > 0) {
         days += 1;
         hours = 0;

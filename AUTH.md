@@ -128,7 +128,10 @@ Cookie: <session cookie จาก login>
 - `GET /api/bookings`, `PATCH /api/bookings/:id/status` และ `POST /api/cars` ต้องเป็น `ADMIN`
 - การอนุมัติใช้ ID แอดมินจาก session โดย body ส่งเฉพาะ `{ status, adminNote? }` ไม่รับ `adminId`
 - บัญชี `isActive=false` และ session version เก่าจะถูกปฏิเสธ และตรวจ role ล่าสุดจากฐานข้อมูลทุกครั้ง
-- การเปลี่ยนแปลงนี้ไม่ได้เพิ่มระบบกันจองซ้อนหรือปรับกฎราคาตาม time zone ของปลายทาง ดูข้อจำกัดเดิมในคู่มือ Prisma
+- การจองรับ `driverName`, `internationalDrivingPermit`, `pickupLocationId`, `dropoffLocationId` เพิ่มเติม จุดรับต้องตรงกับรถ จุดคืนต้องอยู่ในประเทศเดียวกัน และวันรับรถต้องเป็นอนาคต
+- ระบบคำนวณราคาตาม IANA time zone ของจุดรับรถและเก็บ time zone/สถานที่/ข้อมูลผู้ขับขี่เป็นรายการจองจริง
+- คำขอ PENDING และ APPROVED กันรถในช่วง `[startDateTime, endDateTime)` โดยล็อกแถวรถระหว่าง transaction เพื่อกันจองซ้อนจากคำขอพร้อมกัน หากขัดแย้งคืน HTTP 409 และ rollback บัญชีที่สมัครพร้อมจองด้วย
+- Frontend proxy `/api/auth/:action`, `/api/bookings`, `/api/bookings/calculate` ส่งต่อ cookie ให้ Backend และคง Set-Cookie หลายค่า พร้อมตรวจ origin และไม่ cache session
 
 ## ทดสอบ
 
