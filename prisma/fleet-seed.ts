@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { bookings, cars, locations } from './seed-data.js';
+import { bookings, cars, demoVehicleDetails, locations } from './seed-data.js';
 import { legacyValues, lockFleet, offerInclude, type FleetTx } from '../src/lib/fleet.js';
 
 // Two more registrations at the original branch, plus two at another branch in the same country.
@@ -14,12 +14,29 @@ export const fleetExpansionPlan = cars.flatMap((source, index) => {
   }
   return [...destinations].map((locationId, branchIndex) => ({
     sourceId: source.id!, locationId,
-    units: [1, 2].map((unit) => ({
-      id: `${source.id}-fleet-${branchIndex + 1}-${unit}`,
-      licensePlate: `${source.licensePlate}-F${branchIndex + 1}-${unit}`,
-    })),
+    units: [1, 2].map((unit) => {
+      const id = `${source.id}-fleet-${branchIndex + 1}-${unit}`;
+      return { id, licensePlate: `${source.licensePlate}-F${branchIndex + 1}-${unit}`, ...demoVehicleDetails(id) };
+    }),
   }));
 });
+
+export async function fillMissingDemoVehicleDetails(tx: FleetTx) {
+  await lockFleet(tx);
+  const vehicles = [...cars, ...fleetExpansionPlan.flatMap(({ units }) => units)];
+  const details = vehicles.map(({ id, exteriorColor, vin, odometerKm }) =>
+    Prisma.sql`(${id}, ${exteriorColor}, ${vin}, ${odometerKm}::integer)`);
+  return tx.$executeRaw`
+    UPDATE "cars" AS car
+    SET "exteriorColor" = COALESCE(car."exteriorColor", seed."exteriorColor"),
+        "vin" = COALESCE(car."vin", seed."vin"),
+        "odometerKm" = COALESCE(car."odometerKm", seed."odometerKm"),
+        "updatedAt" = CURRENT_TIMESTAMP
+    FROM (VALUES ${Prisma.join(details)}) AS seed("id", "exteriorColor", "vin", "odometerKm")
+    WHERE car."id" = seed."id"
+      AND (car."exteriorColor" IS NULL OR car."vin" IS NULL OR car."odometerKm" IS NULL)
+  `;
+}
 
 export async function expandDemoFleet(tx: FleetTx) {
   await lockFleet(tx);

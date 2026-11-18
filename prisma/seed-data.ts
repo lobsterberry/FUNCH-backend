@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BookingSource, BookingStatus, CarCategory, DrivingSide, Prisma, SteeringSide, TransmissionType } from '@prisma/client';
 
 // All prices are THB, matching the wireframes. Local currency is metadata only;
@@ -64,12 +65,26 @@ type CarSpec = {
   featuredOrder?: number; recommendationOrder?: number; isAvailable?: boolean;
 };
 
-function car(spec: CarSpec, index: number): Prisma.CarUncheckedCreateInput {
+const demoExteriorColors = ['ขาวมุก', 'ดำ', 'เงิน', 'เทาเข้ม', 'น้ำเงิน', 'แดง', 'เขียวเข้ม'];
+
+export function demoVehicleDetails(id: string) {
+  const hash = createHash('sha256').update(id).digest('hex');
+  const sample = Number.parseInt(hash.slice(-8), 16);
+  return {
+    exteriorColor: demoExteriorColors[sample % demoExteriorColors.length],
+    vin: `FUNCH${hash.slice(0, 12).toUpperCase()}`,
+    odometerKm: 8_000 + (sample % 48_000),
+  };
+}
+
+function car(spec: CarSpec, index: number) {
+  const id = `seed-car-${spec.id}`;
   const location = locations.find((item) => item.id === `seed-location-${spec.location}`)!;
   const country = countries.find((item) => item.code === location.countryCode)!;
   const features = spec.features ?? ['GPS_EN', 'CARPLAY_ANDROID_AUTO', 'BASIC_INSURANCE'];
   return {
-    id: `seed-car-${spec.id}`, brand: spec.brand, model: spec.model, year: 2024,
+    id, brand: spec.brand, model: spec.model, year: 2024,
+    ...demoVehicleDetails(id),
     licensePlate: `DEMO-${country.code}-${String(index + 1).padStart(3, '0')}`,
     country: country.code, locationId: location.id,
     hourlyRate: spec.hourlyRate, dailyRate: spec.dailyRate, currencyCode: 'THB',
@@ -81,12 +96,12 @@ function car(spec: CarSpec, index: number): Prisma.CarUncheckedCreateInput {
     description: spec.description ?? `${spec.brand} ${spec.model} สำหรับการเดินทางใน${location.cityTh}`,
     providerName: spec.providerName ?? `FUNCH ${location.city} Demo Rental`,
     featureCodes: features, options: features.map((code) => ({ code, label: featureLabels[code], included: true })),
-    imageUrl: null, rating: spec.rating ?? 4.7, reviewCount: spec.reviewCount ?? 24,
+    rating: spec.rating ?? 4.7, reviewCount: spec.reviewCount ?? 24,
     badge: spec.badge ?? null, isFeatured: spec.featuredOrder !== undefined,
     recommendationOrder: spec.featuredOrder ?? spec.recommendationOrder ?? 100 + index,
     isAvailable: spec.isAvailable ?? true,
     createdAt: new Date('2026-10-01T00:00:00Z'),
-  };
+  } satisfies Prisma.CarUncheckedCreateInput;
 }
 
 // The first four rows reproduce search.html. The six featured rows reproduce index.html.

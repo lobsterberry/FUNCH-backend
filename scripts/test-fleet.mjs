@@ -41,6 +41,8 @@ try {
   for (const [id, location, rate, steering] of [['legacy-1','legacy-A',100,'RHD'],['legacy-2','legacy-A',100,'RHD'],['legacy-3','legacy-B',200,'RHD'],['legacy-4','legacy-B',100,'LHD'],['legacy-unassigned',null,100,'RHD']]) {
     await db.$executeRaw`INSERT INTO cars (id,brand,model,year,"licensePlate",country,"hourlyRate","dailyRate","locationId","steeringSide","updatedAt") VALUES (${id},'Migration','Same name',2026,${id},'ZZ',${rate},1000,${location},${steering}::"SteeringSide",NOW())`;
   }
+  const photo = 'https://example.com/legacy-car.jpg';
+  await db.$executeRaw`UPDATE cars SET "imageUrl" = ${photo} WHERE "locationId" IS NOT NULL`;
   await db.$executeRaw`INSERT INTO bookings (id,"bookingNumber","userId","carId","startDateTime","endDateTime","totalPrice","hourlyRate","dailyRate","pickupLocationId","dropoffLocationId","updatedAt") VALUES ('legacy-booking','legacy-number','legacy-user','legacy-1','2030-01-01T09:00:00Z','2030-01-01T17:00:00Z',1234.50,100,1000,'legacy-A','legacy-A',NOW())`;
   await db.$executeRaw`UPDATE cars SET "isAvailable" = false WHERE id = 'legacy-unassigned'`;
   const [before] = await db.$queryRaw`SELECT to_jsonb(b) AS data FROM bookings b WHERE id='legacy-booking'`;
@@ -50,7 +52,7 @@ try {
   assert.equal(saved.carId, 'legacy-1'); assert.equal(saved.totalPrice.toString(), '1234.5');
   const [after] = await db.$queryRaw`SELECT to_jsonb(b) AS data FROM bookings b WHERE id='legacy-booking'`;
   for (const [key, value] of Object.entries(before.data)) assert.deepEqual(after.data[key], value, `Historical booking changed: ${key}`);
-  const cars = await db.car.findMany({ where: { country: 'ZZ' }, include: { carModelLocation: true }, orderBy: { id: 'asc' } });
+  const cars = await db.car.findMany({ where: { country: 'ZZ' }, include: { carModelLocation: { include: { carModel: true } } }, orderBy: { id: 'asc' } });
   assert.equal(cars[0].carModelLocationId, cars[1].carModelLocationId);
   assert.equal(cars[0].carModelLocation.carModelId, cars[2].carModelLocation.carModelId);
   assert.notEqual(cars[0].carModelLocationId, cars[2].carModelLocationId);
@@ -59,11 +61,31 @@ try {
   assert.equal(cars[4].operationalStatus, 'INACTIVE');
   assert.equal(cars[0].operationalStatus, 'AVAILABLE');
   assert.equal(cars[0].exteriorColor, null); assert.equal(cars[0].odometerKm, null); assert.equal(cars[0].vin, null);
+  assert.equal(cars[0].carModelLocation.carModel.imageUrl, photo);
+  assert.deepEqual(await db.$queryRaw`SELECT column_name FROM information_schema.columns WHERE table_schema = ${schema} AND table_name = 'cars' AND column_name = 'imageUrl'`, []);
   console.log('Legacy migration preserved all booking fields, registrations, rates, variants and unassigned cars.');
   run(['--import', 'tsx', 'prisma/seed.ts']);
   const counts = [await db.carModel.count(), await db.carModelLocation.count(), await db.car.count()];
+  const demoCars = await db.car.findMany({ where: { id: { startsWith: 'seed-car-' } },
+    select: { id: true, exteriorColor: true, vin: true, odometerKm: true } });
+  assert.equal(demoCars.length, 134);
+  assert.equal(new Set(demoCars.map(({ vin }) => vin)).size, demoCars.length);
+  for (const car of demoCars) {
+    assert.ok(car.exteriorColor);
+    assert.match(car.vin, /^FUNCH[0-9A-F]{12}$/);
+    assert.ok(Number.isInteger(car.odometerKm) && car.odometerKm > 0);
+  }
+  const baseDemo = demoCars.find(({ id }) => id === 'seed-car-tokyo-harrier');
+  const expandedDemo = demoCars.find(({ id }) => id === 'seed-car-tokyo-harrier-fleet-1-1');
+  await db.car.update({ where: { id: baseDemo.id }, data: { exteriorColor: 'สีที่แก้ไข', vin: null, odometerKm: 0 } });
+  await db.car.update({ where: { id: expandedDemo.id }, data: { exteriorColor: null, vin: 'EDITED-VIN', odometerKm: 12345 } });
   run(['--import', 'tsx', 'prisma/seed.ts']);
   assert.deepEqual([await db.carModel.count(), await db.carModelLocation.count(), await db.car.count()], counts, 'Seed must be idempotent');
+  const readDetails = (id) => db.car.findUniqueOrThrow({ where: { id },
+    select: { id: true, exteriorColor: true, vin: true, odometerKm: true } });
+  assert.deepEqual(await readDetails(baseDemo.id), { ...baseDemo, exteriorColor: 'สีที่แก้ไข', odometerKm: 0 });
+  assert.deepEqual(await readDetails(expandedDemo.id), { ...expandedDemo, vin: 'EDITED-VIN', odometerKm: 12345 });
+  assert.deepEqual(await readDetails('legacy-1'), { id: 'legacy-1', exteriorColor: null, vin: null, odometerKm: null });
   const sources = await db.car.findMany({ where: { id: { startsWith: 'seed-car-' }, NOT: { id: { contains: '-fleet-' } } }, select: { carModelLocation: true } });
   for (const source of sources) {
     assert.ok(await db.car.count({ where: { carModelLocation: { carModelId: source.carModelLocation.carModelId } } }) >= 3, 'Each seeded model must have several physical cars');

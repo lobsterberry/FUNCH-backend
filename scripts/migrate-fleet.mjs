@@ -22,10 +22,11 @@ try {
       await db.$queryRaw`SELECT to_jsonb(b) AS data FROM bookings b ORDER BY id`;
     assert.equal(after.length, before.length, `${table} row count changed`);
     for (let i = 0; i < before.length; i++) for (const [key, value] of Object.entries(before[i].data)) {
+      if (table === 'cars' && key === 'imageUrl' && !(key in after[i].data)) continue;
       assert.deepEqual(after[i].data[key], value, `${table}/${before[i].data.id}: ${key} changed`);
     }
   }
-  console.log('Verified every original car and booking field is unchanged.');
+  console.log('Verified all retained car and booking fields are unchanged.');
   console.log({ models: await db.carModel.count(), offers: await db.carModelLocation.count(),
     assignedCars: await db.car.count({ where: { carModelLocationId: { not: null } } }),
     unassignedCars: await db.car.count({ where: { carModelLocationId: null } }) });

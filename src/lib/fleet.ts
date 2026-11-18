@@ -11,7 +11,7 @@ export async function lockFleet(tx: FleetTx) {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(64172839)`;
 }
 
-export const modelFields = ['brand', 'model', 'year', 'seats', 'transmission', 'fuelType', 'imageUrl',
+export const modelFields = ['brand', 'model', 'year', 'seats', 'transmission', 'fuelType',
   'options', 'featureCodes', 'categories', 'categoryLabel', 'steeringSide', 'transmissionType',
   'luggageCapacity', 'description', 'rating', 'reviewCount', 'badge', 'isFeatured', 'recommendationOrder'] as const;
 
@@ -21,9 +21,9 @@ export function modelData(car: Record<string, any>) {
 
 // Compatibility bridge for old inventory clients and idempotent demo seeding.
 // New clients explicitly create a model, an offer, then individual registrations.
-export async function attachLegacyCar(tx: FleetTx, car: any) {
+export async function attachLegacyCar(tx: FleetTx, car: any, imageUrl: string | null = null) {
   if (!car.locationId) return car;
-  const data = modelData(car);
+  const data = { ...modelData(car), imageUrl };
   const where: any = { ...data };
   where.featureCodes = { equals: car.featureCodes };
   where.categories = { equals: car.categories };
