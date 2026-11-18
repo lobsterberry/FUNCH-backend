@@ -131,3 +131,22 @@ docker compose down -v
 ยอดรวมคิดจากรายการจองสถานะ `APPROVED` และ `COMPLETED` เท่านั้น การเปลี่ยนสิทธิ์หรือระงับบัญชีจะเพิ่ม `sessionVersion` เพื่อยกเลิกเซสชันเดิมทุกอุปกรณ์ และไม่ยกเลิกประวัติหรือรายการจอง สมาชิกที่เปิดใช้งานใหม่ต้องเข้าสู่ระบบอีกครั้ง ไม่สามารถลดสิทธิ์หรือระงับบัญชีของตนเองได้ และตรวจสิทธิ์ผู้แก้ไขซ้ำใน transaction หลังรอการแก้ไขจากแอดมินคนอื่น
 
 หน้าเว็บอยู่ที่ `/admin/members` ใช้ schema เดิม จึงไม่มี migration เพิ่ม ทดสอบ HTTP flow รวมการเพิกถอนเซสชันและคำขอพร้อมกันใน `tests/admin-members.integration.test.ts` ผ่าน `npm run test:fleet` ซึ่งแยก schema ทดสอบและลบหลังทดสอบเสร็จ
+
+## รายงานสรุปยอดจองรถสำหรับผู้ดูแลระบบ
+
+`GET /api/admin/reports` ตรวจ Auth.js session และ role `ADMIN` ทั้ง JSON/CSV ใช้ `Cache-Control: no-store` และ transaction แบบ Repeatable Read เพื่อให้สถิติ รายการ และช่วงเปรียบเทียบตรงกัน ใช้ schema เดิม ไม่มี migration เพิ่ม
+
+| Query | ค่า |
+| --- | --- |
+| `start`, `end` | `YYYY-MM-DD` ช่วง 1–366 วัน รวมวันสิ้นสุด ตาม Asia/Bangkok; เริ่มต้น 30 วันล่าสุด |
+| `basis` | `createdAt` (ค่าเริ่มต้น) หรือ `startDateTime` |
+| `comparison` | `previous` (ช่วงก่อนหน้าเท่ากัน), `year` (ปีก่อน; 29 ก.พ. ปรับเป็น 28 ก.พ.), `none` |
+| `country` | `all` หรือรหัสประเทศจุดรับรถ; รายการเก่าที่ไม่มีจุดรับใช้ประเทศของรถ |
+| `category` | `all`, `SUV`, `SEDAN`, `MPV`, `EV`, `ECO`, `LUXURY`, `WAGON` ตามหมวดหมู่รถปัจจุบัน |
+| `currency` | `all` หรือรหัสสกุลเงิน 3 ตัว เช่น `THB` |
+| `page`, `pageSize` | หน้ารายละเอียด ค่าเริ่มต้น 1/10; สูงสุด 100 รายการต่อหน้า |
+| `format` | `json` (ค่าเริ่มต้น) หรือ `csv` (ส่งออกครบทุกหน้าตามตัวกรอง) |
+
+JSON คืน `summary`, `comparison`, `trend` (เติมวัน/เดือนที่ไม่มียอด), `countries`, `topCars` (แยกสกุลเงิน), `sources`, `pricing`, `bookings`, `pagination`, `filters`, `options`, `timeZone`, `generatedAt` โดยไม่ส่งข้อมูลส่วนตัวสมาชิก มูลค่าใช้ Prisma Decimal และคืนเป็น string จำนวนคำขอรวมทุกสถานะ; ยอดยืนยันและ AOV คิดเฉพาะ `APPROVED + COMPLETED` แยกสกุลเงิน ใช้ราคาที่บันทึกตอนจองและชื่อรถจาก snapshot ไม่ตีความว่าเป็นยอดรับชำระ ภาษี หรือกำไรสุทธิ สถานะเป็นสถานะปัจจุบัน ไม่ใช่การย้อนสถานะ ณ วันสิ้นสุดรายงาน
+
+ทดสอบการรวมยอดและ calendar edge cases ใน `tests/booking-report.test.ts`; ทดสอบ HTTP กับ PostgreSQL/Auth.js ใน `tests/admin-reports.integration.test.ts` ด้วย `AUTH_TEST_DATABASE_URL` (ใช้ข้อมูล fixture ที่ลบหลังจบ) ผ่าน `npm test` หรือ `npm run test:fleet`
