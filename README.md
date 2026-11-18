@@ -38,14 +38,16 @@ Schema และ seed ตาม wireframe: ดู [คู่มือ Prisma](pr
 - **Username**: `postgres`
 - **Password**: ค่าที่ตั้งใน `POSTGRES_PASSWORD`
 - **Database**: `funch_db`
-- **Connection URL**: ตั้ง `DATABASE_URL` โดยใช้รหัสผ่านเดียวกับ `POSTGRES_PASSWORD` และ URL-encode อักขระพิเศษในรหัสผ่าน
+- ตั้ง `DOCKER_DATABASE_URL` ให้ใช้ `postgres:5432` สำหรับ backend ใน Docker Compose เช่น `postgresql://postgres:ENCODED_PASSWORD@postgres:5432/funch_db?schema=public`
+- ตั้ง `DATABASE_URL` ให้ใช้ `localhost` และพอร์ต `POSTGRES_PORT` สำหรับ Node.js หรือ Prisma ที่รันบนเครื่อง หากมี `DATABASE_URL` เดิมที่ใช้ `postgres` อยู่แล้ว Docker Compose จะใช้ค่านั้นเมื่อเว้น `DOCKER_DATABASE_URL` ไว้
+- ใช้รหัสผ่านเดียวกับ `POSTGRES_PASSWORD` และ URL-encode อักขระพิเศษใน URL ทั้งสองค่า
 
 ---
 
 ## 🛠️ วิธีการรันระบบด้วย Docker Compose
 
 ### 1. เริ่มต้นระบบทั้งหมด
-เปิด Terminal ที่โฟลเดอร์ repository นี้ คัดลอก `.env.example` เป็น `.env` และตั้ง `AUTH_SECRET`, `POSTGRES_PASSWORD`, `PGADMIN_DEFAULT_EMAIL`, `PGADMIN_DEFAULT_PASSWORD` และ `DATABASE_URL` ของเครื่องที่รันก่อนเริ่ม ดู [คู่มือ Auth API](AUTH.md) สำหรับการสร้าง secret และตั้ง `SEED_USER_PASSWORD` อย่างน้อย 12 ตัวอักษรหากต้องการ seed บัญชีทดลอง:
+เปิด Terminal ที่โฟลเดอร์ repository นี้ คัดลอก `.env.example` เป็น `.env` และตั้ง `AUTH_SECRET`, `POSTGRES_PASSWORD`, `PGADMIN_DEFAULT_EMAIL`, `PGADMIN_DEFAULT_PASSWORD` และ `DOCKER_DATABASE_URL` ก่อนเริ่ม ดู [คู่มือ Auth API](AUTH.md) สำหรับการสร้าง secret และตั้ง `SEED_USER_PASSWORD` อย่างน้อย 12 ตัวอักษรหากต้องการ seed บัญชีทดลอง
 ```bash
 docker compose up -d --build
 ```
@@ -54,7 +56,7 @@ docker compose up -d --build
 npm run docker:up
 ```
 
-> **หมายเหตุ**: Container Backend รัน `prisma generate` และ `prisma migrate deploy` ก่อนเริ่ม API เพื่อปรับ schema และ backfill ข้อมูลตาม migration
+Container Backend รัน `prisma generate` และ `prisma migrate deploy` ก่อนเริ่ม API เพื่อปรับ schema และ backfill ข้อมูลตาม migration ตรวจสถานะด้วย `docker compose ps` และเปิด `http://localhost:5000/health` หลัง backend ขึ้นสถานะ `healthy`
 
 ### 2. ดู Logs การทำงาน
 ```bash

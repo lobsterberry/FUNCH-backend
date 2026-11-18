@@ -14,7 +14,7 @@ services:
       - AUTH_SECRET=${AUTH_SECRET:?Set AUTH_SECRET in backend/.env}
       - AUTH_URL=${AUTH_URL:-http://localhost:5000}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
-      - DATABASE_URL=${DATABASE_URL:?Set DATABASE_URL in backend/.env using host postgres}
+      - DATABASE_URL=${DOCKER_DATABASE_URL:-${DATABASE_URL:?Set DOCKER_DATABASE_URL in backend/.env using host postgres}}
       - SEED_USER_PASSWORD=${SEED_USER_PASSWORD:-}
     volumes:
       - ./src:/app/src
@@ -24,6 +24,12 @@ services:
       postgres:
         condition: service_healthy
     command: sh -c "npx prisma generate && npx prisma migrate deploy && npm run dev"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
 
   # PostgreSQL Database
   postgres:
