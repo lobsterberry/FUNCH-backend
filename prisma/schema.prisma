@@ -179,7 +179,6 @@ model Car {
   seats               Int              @default(4)
   transmission        String           @default("Automatic") // Automatic / Manual
   fuelType            String           @default("Gasoline") // Gasoline, EV, Hybrid, Diesel
-  imageUrl            String?
   options             Json? // เช่น GPS, Child seat, Dashcam, Bluetooth
   // Keep display labels in options; use stable codes for hasEvery/hasSome filters.
   featureCodes        String[]         @default([])

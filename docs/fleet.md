@@ -21,6 +21,8 @@ npm run prisma:fleet:migrate
 
 ฟิลด์สเปกและราคาบน `Car` ยังเก็บเป็น compatibility mirror สำหรับ API เดิม การอ่านหลักใช้ model/offer ส่วนการเขียนผ่าน API จะปรับ mirror ภายใน transaction เดียวกัน ยังไม่ควรลบคอลัมน์เหล่านี้จนกว่าจะยกเลิก clients เดิมทั้งหมด
 
+รูปของรุ่นรถเก็บที่ `CarModel.imageUrl` หลัง migration `20261118000000_drop_car_image_url` ฐานข้อมูลที่มี URL รายคันต่างจากรุ่นหรือยังไม่มีรุ่นที่เชื่อมโยงต้องจัดการข้อมูลรูปก่อนรัน migration เพื่อรักษารูปเดิมไว้
+
 ## API
 
 | Endpoint | การใช้งาน |

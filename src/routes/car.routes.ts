@@ -237,7 +237,8 @@ router.patch('/:id', requireJson, requireAdmin, async (req, res, next) => {
       await lockFleet(tx);
       // Share the reservation lock so a car cannot move while a booking is created.
       await tx.$queryRaw`SELECT id FROM cars WHERE id = ${req.params.id} FOR UPDATE`;
-      const existing = await tx.car.findUnique({ where: { id: req.params.id } });
+      const existing = await tx.car.findUnique({ where: { id: req.params.id },
+        include: { carModelLocation: { select: { carModel: { select: { imageUrl: true } } } } } });
       if (!existing) throw new Error('CAR_NOT_FOUND');
       if (existing.isAvailable && !data.isAvailable && await tx.booking.findFirst({ where: { carId: existing.id, status: { in: ['PENDING', 'APPROVED'] } } })) throw new Error('FLEET_BOOKED');
       const changedSpecification = Object.entries(modelData(data)).some(([key, value]) => !isDeepStrictEqual((existing as any)[key], value));
@@ -250,7 +251,7 @@ router.patch('/:id', requireJson, requireAdmin, async (req, res, next) => {
       }
       const updated = await tx.car.update({ where: { id: existing.id }, data: { ...data,
         operationalStatus: inventoryStatus(data.isAvailable, undefined, existing.operationalStatus), carModelLocationId: null } });
-      await attachLegacyCar(tx, updated);
+      await attachLegacyCar(tx, updated, existing.carModelLocation?.carModel.imageUrl);
       return tx.car.findUniqueOrThrow({ where: { id: existing.id }, include: inventoryInclude });
     });
     res.json({ success: true, data: formatCar(car) });

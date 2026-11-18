@@ -155,14 +155,14 @@ router.post('/models', requireJson, requireAdmin, async (req, res, next) => {
 });
 router.patch('/models/:id', requireJson, requireAdmin, async (req, res, next) => {
   try {
-    const data = modelSchema.parse(req.body);
+    const { imageUrl, ...data } = modelSchema.parse(req.body);
     const model = await prisma.$transaction(async (tx) => {
       await lockFleet(tx);
       if (!await tx.carModel.findUnique({ where: { id: req.params.id } })) return null;
       // Booked specifications stay fixed until outstanding journeys are resolved.
       if (await tx.booking.findFirst({ where: { status: { in: [...reservedStatuses] },
         car: { carModelLocation: { carModelId: req.params.id } } } })) throw new Error('FLEET_BOOKED');
-      const updated = await tx.carModel.update({ where: { id: req.params.id }, data });
+      const updated = await tx.carModel.update({ where: { id: req.params.id }, data: { ...data, imageUrl } });
       await tx.car.updateMany({ where: { carModelLocation: { carModelId: updated.id } }, data });
       return updated;
     });

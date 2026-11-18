@@ -95,9 +95,19 @@ test('admin login and fleet management HTTP flow', { skip: !process.env.AUTH_TES
       assert.equal((await prisma.car.findUniqueOrThrow({ where: { id: carId } })).hourlyRate.toString(), '123.45');
     });
     await t.test('editing updates public results while retaining unrelated vehicle data', async () => {
-      await prisma.car.update({ where: { id: carId }, data: { description: 'Preserve this', rating: 4.9 } });
+      const { carModelLocation } = await prisma.car.update({ where: { id: carId },
+        data: { description: 'Preserve this', rating: 4.9 }, include: { carModelLocation: true } });
+      assert.ok(carModelLocation);
+      const imageUrl = 'https://example.com/model.jpg';
+      const { licensePlate, country, hourlyRate, dailyRate, locationId, providerName, isAvailable, ...specification } = input;
+      const model = await admin.request(`/api/fleet/models/${carModelLocation.carModelId}`, 'PATCH', { ...specification, imageUrl });
+      assert.equal(model.status, 200);
+      assert.equal(model.data.data.imageUrl, imageUrl);
       const updated = await admin.request(`/api/cars/${carId}`, 'PATCH', { ...input, model: 'Updated', dailyRate: 1500, isAvailable: true });
       assert.equal(updated.status, 200);
+      const saved = await prisma.car.findUniqueOrThrow({ where: { id: carId },
+        include: { carModelLocation: { include: { carModel: true } } } });
+      assert.equal(saved.carModelLocation?.carModel.imageUrl, imageUrl);
       const publicCar = await anonymous.request(`/api/cars/${carId}`);
       assert.equal(publicCar.data.data.name, 'Integration Updated');
       assert.equal(publicCar.data.data.day, 1500);

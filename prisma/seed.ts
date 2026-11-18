@@ -4,12 +4,14 @@ import { randomBytes, scryptSync } from 'node:crypto';
 import { PrismaClient, type VehicleStatus } from '@prisma/client';
 import { bookings, cars, countries, featureLabels, locations, pricingExamples, users } from './seed-data.js';
 import { attachLegacyCar, lockFleet } from '../src/lib/fleet.js';
-import { expandDemoFleet, fleetExpansionPlan } from './fleet-seed.js';
+import { expandDemoFleet, fillMissingDemoVehicleDetails, fleetExpansionPlan } from './fleet-seed.js';
 
 function validateData() {
   for (const rows of [countries.map((row) => row.code), locations.map((row) => row.id), cars.map((row) => row.id), users.map((row) => row.id), bookings.map((row) => row.bookingNumber)]) {
     assert.equal(new Set(rows).size, rows.length, 'Seed identifiers must be unique');
   }
+  const vehicles = [...cars, ...fleetExpansionPlan.flatMap(({ units }) => units)];
+  assert.equal(new Set(vehicles.map(({ vin }) => vin)).size, vehicles.length, 'Each demo car must have a unique VIN');
   assert.equal(cars.filter((row) => row.isFeatured).length, 6, 'Home wireframe has six featured cars');
   assert.equal(cars.filter((row) => row.locationId === 'seed-location-haneda' && row.isAvailable).length, 18, 'Search wireframe has 18 Tokyo/Haneda cars');
   assert.equal(new Set(bookings.map((row) => row.status)).size, 5, 'All booking statuses must be represented');
@@ -74,15 +76,18 @@ async function main() {
         // Preserve existing password hashes on reruns.
         await tx.user.upsert({ where: { id: user.id }, create: { ...user, password, createdAt }, update: user });
       }
-      for (const vehicle of cars) {
+      for (const { exteriorColor, vin, odometerKm, ...vehicle } of cars) {
         const values = { ...vehicle, operationalStatus: (vehicle.isAvailable ? 'AVAILABLE' : 'INACTIVE') as VehicleStatus };
-        const saved = await tx.car.upsert({ where: { id: vehicle.id }, create: values, update: values });
+        const saved = await tx.car.upsert({ where: { id: vehicle.id },
+          create: { ...values, exteriorColor, vin, odometerKm }, update: values });
         await attachLegacyCar(tx, saved);
       }
       for (const booking of bookings) {
         await tx.booking.upsert({ where: { id: booking.id }, create: booking, update: booking });
       }
-      return expandDemoFleet(tx);
+      const result = await expandDemoFleet(tx);
+      const filledVehicleDetails = await fillMissingDemoVehicleDetails(tx);
+      return { ...result, filledVehicleDetails };
     }, { timeout: 60000 });
     console.log('Seed complete:', summary, expansion);
   } finally {
