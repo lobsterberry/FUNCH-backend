@@ -24,8 +24,6 @@ export function createApp() {
   const backendOrigin = new URL(process.env.AUTH_URL || "http://localhost:5000")
     .origin;
   const allowedOrigins = new Set([frontendOrigin, backendOrigin]);
-  if (process.env.TRUST_PROXY_HOPS)
-    app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS));
   app.disable("x-powered-by");
   app.use(cors({ origin: [...allowedOrigins], credentials: true }));
   app.use((req, res, next) => {

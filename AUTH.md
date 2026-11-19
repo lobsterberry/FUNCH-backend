@@ -13,7 +13,7 @@
 
 สำหรับ Node.js บนเครื่องกับ PostgreSQL ใน Docker ให้ใช้ host `localhost` ใน `DATABASE_URL`; สำหรับ backend ใน Docker ให้ใช้ `postgres` โดย Docker Compose ส่งค่า Auth ให้ backend แล้ว และยัง sync schema ด้วย `prisma db push` ตามโฟลว์ development เดิม
 
-Production ต้องใช้ HTTPS และตั้ง `AUTH_URL` ให้เป็น public origin เพื่อเปิด Secure cookie ถ้าอยู่หลัง reverse proxy ให้ตั้ง `TRUST_PROXY_HOPS` ตามจำนวน proxy ที่เชื่อถือได้ (เช่น `1`); หากใช้ Docker ให้ส่ง environment variable นี้เข้า container ด้วย กำหนด frontend/backend บน site เดียวกัน เช่น `app.example.com` / `api.example.com` เพื่อใช้ SameSite=Lax cookie
+Production ต้องใช้ HTTPS และตั้ง `AUTH_URL` ให้เป็น public origin เพื่อเปิด Secure cookie กำหนด frontend/backend บน site เดียวกัน เช่น `app.example.com` / `api.example.com` เพื่อใช้ SameSite=Lax cookie
 
 ## Endpoints
 
