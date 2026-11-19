@@ -1,5 +1,5 @@
-import { Router, Request, Response } from 'express';
-import prisma from '../lib/prisma.js';
+import { Router, Request, Response } from "express";
+import prisma from "../lib/prisma.js";
 
 const router = Router();
 
@@ -39,20 +39,26 @@ function formatCountry(c: {
   }>;
 }) {
   const sortedLocations = [...c.locations].sort((a, b) => {
-    const prioA = (a.airportCode ? PRIMARY_AIRPORT_ORDER[a.airportCode] : undefined) ?? 99;
-    const prioB = (b.airportCode ? PRIMARY_AIRPORT_ORDER[b.airportCode] : undefined) ?? 99;
+    const prioA =
+      (a.airportCode ? PRIMARY_AIRPORT_ORDER[a.airportCode] : undefined) ?? 99;
+    const prioB =
+      (b.airportCode ? PRIMARY_AIRPORT_ORDER[b.airportCode] : undefined) ?? 99;
     if (prioA !== prioB) return prioA - prioB;
     return a.name.localeCompare(b.name);
   });
 
   const primaryLoc = sortedLocations[0];
-  const airportTag = primaryLoc?.airportCode ? ` (${primaryLoc.airportCode} Airport)` : '';
+  const airportTag = primaryLoc?.airportCode
+    ? ` (${primaryLoc.airportCode} Airport)`
+    : "";
   const locationLabel = primaryLoc
     ? `${primaryLoc.cityTh} - ${primaryLoc.nameTh}${airportTag}`
-    : '';
+    : "";
 
   // Unique list of cities in Thai for this country (with primary city first)
-  const cities = Array.from(new Set(sortedLocations.map((l) => l.cityTh).filter(Boolean)));
+  const cities = Array.from(
+    new Set(sortedLocations.map((l) => l.cityTh).filter(Boolean)),
+  );
 
   return {
     code: c.code,
@@ -61,8 +67,8 @@ function formatCountry(c: {
     flag: c.flag,
     currencyCode: c.currencyCode,
     drivingSide: c.drivingSide,
-    steering: (c.drivingSide === 'LEFT' ? 'right' : 'left') as 'right' | 'left',
-    city: primaryLoc?.cityTh || '',
+    steering: (c.drivingSide === "LEFT" ? "right" : "left") as "right" | "left",
+    city: primaryLoc?.cityTh || "",
     location: locationLabel,
     cities,
     locations: sortedLocations,
@@ -70,12 +76,12 @@ function formatCountry(c: {
 }
 
 // GET /api/countries - รายการประเทศทั้งหมด พร้อมข้อมูลจุดรับรถและเมือง
-router.get('/', async (_req: Request, res: Response) => {
+router.get("/", async (_req: Request, res: Response) => {
   try {
     const countries = await prisma.country.findMany({
       include: {
         locations: {
-          orderBy: { name: 'asc' },
+          orderBy: { name: "asc" },
         },
       },
     });
@@ -100,20 +106,22 @@ router.get('/', async (_req: Request, res: Response) => {
 });
 
 // GET /api/countries/:code - ข้อมูลประเทศตามรหัส เช่น JP, TH
-router.get('/:code', async (req: Request, res: Response) => {
+router.get("/:code", async (req: Request, res: Response) => {
   try {
     const { code } = req.params;
     const country = await prisma.country.findUnique({
       where: { code: String(code).toUpperCase() },
       include: {
         locations: {
-          orderBy: { name: 'asc' },
+          orderBy: { name: "asc" },
         },
       },
     });
 
     if (!country) {
-      return res.status(404).json({ success: false, message: 'Country not found' });
+      return res
+        .status(404)
+        .json({ success: false, message: "Country not found" });
     }
 
     res.json({

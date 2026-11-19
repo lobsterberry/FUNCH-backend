@@ -26,8 +26,12 @@ export function calculateCarRentalPrice(input: PricingInput): PricingResult {
   const start = new Date(input.startDateTime);
   const end = new Date(input.endDateTime);
 
-  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
-    throw new Error('End date/time must be after start date/time');
+  if (
+    !Number.isFinite(start.getTime()) ||
+    !Number.isFinite(end.getTime()) ||
+    end <= start
+  ) {
+    throw new Error("End date/time must be after start date/time");
   }
 
   const diffMs = end.getTime() - start.getTime();
@@ -37,17 +41,28 @@ export function calculateCarRentalPrice(input: PricingInput): PricingResult {
   let hours = 0;
 
   const clock = (value: Date) => {
-    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
-      timeZone: input.timeZone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-    }).formatToParts(value).map(({ type, value }) => [type, value]));
-    return { date: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) + Number(parts.minute) / 60 };
+    const parts = Object.fromEntries(
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone: input.timeZone || "UTC",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      })
+        .formatToParts(value)
+        .map(({ type, value }) => [type, value]),
+    );
+    return {
+      date: `${parts.year}-${parts.month}-${parts.day}`,
+      hour: Number(parts.hour) + Number(parts.minute) / 60,
+    };
   };
   const localStart = clock(start);
   const localEnd = clock(end);
   // Apply the 14:00 rule at the pickup location, independent of server timezone.
-  const isSameDay =
-    localStart.date === localEnd.date;
+  const isSameDay = localStart.date === localEnd.date;
 
   if (isSameDay) {
     const endHour = localEnd.hour;
@@ -93,4 +108,3 @@ export function calculateCarRentalPrice(input: PricingInput): PricingResult {
     breakdown: `${days} วัน (${days * input.dailyRate} บาท) + ${hours} ชั่วโมง (${hourCost} บาท) = ${totalPrice} บาท`,
   };
 }
-
