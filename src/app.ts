@@ -1,9 +1,8 @@
 import "dotenv/config";
 import express, { type ErrorRequestHandler } from "express";
 import cors from "cors";
-import { Prisma } from "@prisma/client";
 import { z } from "zod";
-import prisma from "./lib/prisma.js";
+import { databasePool, isUniqueViolation } from "./lib/db.js";
 import { createAuthConfig } from "./auth.js";
 import { createAuthRoutes } from "./routes/auth.routes.js";
 import { loadSession } from "./middleware/auth.js";
@@ -42,7 +41,7 @@ export function createApp() {
 
   app.get("/health", async (_req, res) => {
     try {
-      await prisma.$queryRaw`SELECT 1`;
+      await databasePool().query("SELECT 1");
       res.json({
         status: "ok",
         service: "funch-backend",
@@ -94,10 +93,7 @@ export function createApp() {
           message: "Invalid request data",
           errors: error.flatten(),
         });
-    } else if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2002"
-    ) {
+    } else if (isUniqueViolation(error)) {
       res
         .status(409)
         .json({

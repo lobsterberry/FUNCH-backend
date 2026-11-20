@@ -1,3 +1,5 @@
+import { count, execute, fixtureUser, row, rows } from './fixtures.js';
+import { closeDatabasePool } from '../src/lib/db.js';
 import 'dotenv/config';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,13 +12,12 @@ test('model inventory, allocation and one-way schedules work through HTTP', { sk
   process.env.AUTH_SECRET = 'cars-integration-secret-1234567890';
   process.env.NODE_ENV = 'test';
   const { createApp } = await import('../src/app.js');
-  const { default: prisma } = await import('../src/lib/prisma.js');
   const { hashPassword } = await import('../src/utils/password.js');
   const run = randomUUID();
   const password = 'CarsIntegration123!';
   const email = `cars-${run}@funch.example`;
   const guestEmail = `cars-guest-${run}@funch.example`;
-  await prisma.user.create({ data: { email, name: 'Car administrator', password: await hashPassword(password), role: 'ADMIN' } });
+  await fixtureUser({ email, name: 'Car administrator', password: await hashPassword(password), role: 'ADMIN' });
   const server = createApp().listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -33,7 +34,7 @@ test('model inventory, allocation and one-way schedules work through HTTP', { sk
   }
   const csrf = await request('/api/auth/csrf');
   await request('/api/auth/login', 'POST', { email, password, csrfToken: csrf.body.csrfToken });
-  const locations = await prisma.location.findMany({ where: { countryCode: 'JP' }, take: 2 });
+  const locations = await rows('SELECT * FROM locations WHERE "countryCode" = $1 ORDER BY id LIMIT $2', ['JP', 2]);
   const [a, b] = locations;
   let modelId = '';
   let offerA: any, offerB: any;
@@ -82,7 +83,7 @@ test('model inventory, allocation and one-way schedules work through HTTP', { sk
       assert.equal(new Set(bookings.map((booking) => booking.carId)).size, 2);
       assert.equal((await search(a.id)).length, 0);
       const guest = await request('/api/bookings', 'POST', { ...body, registerUser: { email: guestEmail, name: 'Guest', password } }, false);
-      assert.equal(guest.status, 409); assert.equal(await prisma.user.count({ where: { email: guestEmail } }), 0);
+      assert.equal(guest.status, 409); assert.equal(await count('SELECT count(*) AS count FROM users WHERE "email" = $1', [guestEmail]), 0);
     });
     await t.test('cancellation releases capacity and restoring a replaced reservation cannot double-book', async () => {
       assert.equal((await request(`/api/bookings/${bookings[0].id}/status`, 'PATCH', { status: 'CANCELLED' })).status, 200);
@@ -96,7 +97,7 @@ test('model inventory, allocation and one-way schedules work through HTTP', { sk
     });
     let journey: any, followup: any;
     await t.test('one-way trips project future positions, buffers and dependent pickups', async () => {
-      await prisma.car.updateMany({ where: { id: { in: [carIds[1], carIds[3]] } }, data: { isAvailable: false } });
+      await execute(`UPDATE cars SET "isAvailable" = $2, "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC' WHERE "id" = ANY($1::text[])`, [[carIds[1], carIds[3]], false]);
       const created = await request('/api/bookings', 'POST', { carModelLocationId: offerA.id, dropoffLocationId: b.id, ...range(10) });
       assert.equal(created.status, 201); journey = created.body.data;
       const after = { startDateTime: new Date(Date.parse(journey.endDateTime) + 3_600_000).toISOString(),
@@ -109,36 +110,36 @@ test('model inventory, allocation and one-way schedules work through HTTP', { sk
       assert.equal(followup.carId, journey.carId);
       assert.equal((await request(`/api/bookings/${journey.id}/status`, 'PATCH', { status: 'CANCELLED' })).status, 409);
       assert.equal((await request(`/api/bookings/${followup.id}/status`, 'PATCH', { status: 'CANCELLED' })).status, 200);
-      const foreign = await prisma.location.findFirstOrThrow({ where: { countryCode: 'US' } });
+      const foreign = await row('SELECT * FROM locations WHERE "countryCode" = $1 ORDER BY id LIMIT 1', ['US']);
       assert.equal((await request('/api/bookings', 'POST', { carModelLocationId: offerA.id, dropoffLocationId: foreign.id, ...range(20) })).status, 400);
     });
     await t.test('price edits preserve snapshots and completed returns record the actual location', async () => {
       const offerInput = { carModelId: modelId, locationId: a.id, providerName: run, hourlyRate: 300, dailyRate: 3000, isActive: true, turnaroundMinutes: 90 };
       assert.equal((await request(`/api/cars/offers/${offerA.id}`, 'PATCH', offerInput)).status, 200);
-      const preserved = await prisma.booking.findUniqueOrThrow({ where: { id: journey.id } });
+      const preserved = await row('SELECT * FROM bookings WHERE "id" = $1', [journey.id]);
       assert.equal(Number(preserved.hourlyRate), 100); assert.equal(preserved.turnaroundMinutes, 60);
       assert.equal((preserved.carSnapshot as any).model, run);
       assert.equal((await request(`/api/bookings/${journey.id}/status`, 'PATCH', { status: 'APPROVED' })).status, 200);
       assert.equal((await request(`/api/bookings/${journey.id}/status`, 'PATCH', { status: 'COMPLETED' })).status, 409);
-      await prisma.booking.update({ where: { id: journey.id }, data: { startDateTime: new Date(Date.now() - 5 * 3_600_000), endDateTime: new Date(Date.now() - 2 * 3_600_000) } });
+      await execute(`UPDATE bookings SET "startDateTime" = $2, "endDateTime" = $3, "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC' WHERE "id" = $1`, [journey.id, new Date(Date.now() - 5 * 3_600_000), new Date(Date.now() - 2 * 3_600_000)]);
       assert.equal((await request(`/api/bookings/${journey.id}/status`, 'PATCH', { status: 'COMPLETED' })).status, 200);
-      const returned = await prisma.car.findUniqueOrThrow({ where: { id: journey.carId } });
+      const returned = await row('SELECT * FROM cars WHERE "id" = $1', [journey.carId]);
       assert.equal(returned.locationId, b.id); assert.ok(returned.availableFrom!.getTime() > Date.now());
-      assert.equal(await prisma.carMovement.count({ where: { bookingId: journey.id } }), 1);
+      assert.equal(await count('SELECT count(*) AS count FROM car_movements WHERE "bookingId" = $1', [journey.id]), 1);
       assert.equal((await request(`/api/bookings/${journey.id}/status`, 'PATCH', { status: 'COMPLETED' })).status, 200);
-      assert.equal(await prisma.carMovement.count({ where: { bookingId: journey.id } }), 1);
+      assert.equal(await count('SELECT count(*) AS count FROM car_movements WHERE "bookingId" = $1', [journey.id]), 1);
       assert.equal((await request(`/api/cars/${journey.carId}/schedule`)).status, 200);
       assert.equal((await request(`/api/bookings/${journey.id}/status`, 'PATCH', { status: 'APPROVED' })).status, 409);
     });
     await t.test('explicit transfers retain history and stale quotes cannot silently change the total', async () => {
-      const moved = await prisma.car.findUniqueOrThrow({ where: { id: journey.carId } });
+      const moved = await row('SELECT * FROM cars WHERE "id" = $1', [journey.carId]);
       const body = { carModelLocationId: offerA.id, year: 2026, licensePlate: moved.licensePlate, isAvailable: true };
       // Saving maintenance flags preserves the real return location.
       assert.equal((await request(`/api/cars/${moved.id}`, 'PATCH', body)).status, 200);
-      assert.equal((await prisma.car.findUniqueOrThrow({ where: { id: moved.id } })).locationId, b.id);
+      assert.equal((await row('SELECT * FROM cars WHERE "id" = $1', [moved.id])).locationId, b.id);
       assert.equal((await request(`/api/cars/${moved.id}`, 'PATCH', { ...body, transfer: true })).status, 200);
-      assert.equal((await prisma.car.findUniqueOrThrow({ where: { id: moved.id } })).locationId, a.id);
-      assert.equal(await prisma.carMovement.count({ where: { carId: moved.id } }), 2);
+      assert.equal((await row('SELECT * FROM cars WHERE "id" = $1', [moved.id])).locationId, a.id);
+      assert.equal(await count('SELECT count(*) AS count FROM car_movements WHERE "carId" = $1', [moved.id]), 2);
       const stale = await request('/api/bookings', 'POST', { carModelLocationId: offerA.id, ...range(30), quotedTotal: 1 });
       assert.equal(stale.status, 409); assert.equal(stale.body.message, 'PRICE_CHANGED');
       assert.equal((await request('/api/cars', 'POST', { ...body, licensePlate: `wrong-year-${run}`, year: 2025 })).status, 400);
@@ -164,14 +165,14 @@ test('model inventory, allocation and one-way schedules work through HTTP', { sk
       assert.equal(catalog.models.find((row: any) => row.id === modelId).locationCount, 2);
       assert.equal(catalog.locationInventory.find((row: any) => row.locationId === a.id).totalCars, baseline + 3);
       assert.equal(catalog.offers.find((row: any) => row.id === offerA.id).inventoryCount, 6);
-      const count = await prisma.car.count({ where: { carModelLocation: { carModelId: modelId } } });
+      const countBefore = await count('SELECT count(*) AS count FROM cars WHERE "carModelLocationId" IN (SELECT id FROM car_model_locations WHERE "carModelId" = $1)', [modelId]);
       assert.equal((await request('/api/cars/bulk', 'POST', { ...body, licensePlates: [`new-${run}`, body.licensePlates[0]] })).status, 409);
-      assert.equal(await prisma.car.count({ where: { licensePlate: `new-${run}` } }), 0);
+      assert.equal(await count('SELECT count(*) AS count FROM cars WHERE "licensePlate" = $1', [`new-${run}`]), 0);
       assert.equal((await request('/api/cars/bulk', 'POST', { ...body, licensePlates: [' repeat ', 'repeat'] })).status, 400);
       assert.equal((await request('/api/cars/bulk', 'POST', { ...body, licensePlates: [] })).status, 400);
       assert.equal((await request('/api/cars/bulk', 'POST', { ...body, licensePlates: Array.from({ length: 101 }, (_, i) => `too-many-${i}`) })).status, 400);
       assert.equal((await request('/api/cars/bulk', 'POST', { ...body, year: 2025 })).status, 400);
-      assert.equal(await prisma.car.count({ where: { carModelLocation: { carModelId: modelId } } }), count);
+      assert.equal(await count('SELECT count(*) AS count FROM cars WHERE "carModelLocationId" IN (SELECT id FROM car_model_locations WHERE "carModelId" = $1)', [modelId]), countBefore);
       assert.equal((await search(a.id, range(40)))[0].availableCount, 4);
       const reservations = await Promise.all(Array.from({ length: 5 }, () => request('/api/bookings', 'POST', { carModelLocationId: offerA.id, ...range(40) })));
       assert.deepEqual(reservations.map((result) => result.status).sort(), [201, 201, 201, 201, 409]);
@@ -185,11 +186,11 @@ test('model inventory, allocation and one-way schedules work through HTTP', { sk
       const id = created.body.data.id; carIds.push(id);
       assert.equal(created.body.data.exteriorColor, 'Pearl White');
       assert.equal(created.body.data.odometerKm, 12500); assert.equal(created.body.data.vin, body.vin);
-      await prisma.car.update({ where: { id }, data: { locationId: b.id, availableFrom: new Date(Date.now() + 3600000) } });
+      await execute(`UPDATE cars SET "locationId" = $2, "availableFrom" = $3, "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC' WHERE "id" = $1`, [id, b.id, new Date(Date.now() + 3600000)]);
       const returnedUnit = (await request('/api/cars/catalog')).body.data.units.find((unit: any) => unit.id === id);
       assert.equal(returnedUnit.homeLocationId, a.id); assert.equal(returnedUnit.locationId, b.id);
       assert.equal(returnedUnit.day, 1500); assert.equal(returnedUnit.inventoryStatus, 'CLEANING');
-      await prisma.car.update({ where: { id }, data: { locationId: a.id, availableFrom: null } });
+      await execute(`UPDATE cars SET "locationId" = $2, "availableFrom" = $3, "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC' WHERE "id" = $1`, [id, a.id, null]);
       assert.equal((await request(`/api/cars/${id}`, 'PATCH', { ...body, odometerKm: -1 })).status, 400);
       assert.equal((await request(`/api/cars/${id}`, 'PATCH', { ...body, operationalStatus: 'MAINTENANCE' })).status, 400);
       assert.equal((await request('/api/cars/bulk', 'POST', { carModelLocationId: offerA.id, year: 2026,
@@ -210,7 +211,7 @@ test('model inventory, allocation and one-way schedules work through HTTP', { sk
       const otherProvider = await request('/api/cars/offers', 'POST', { carModelId: modelId, locationId: b.id,
         providerName: `${run}-other`, hourlyRate: 100, dailyRate: 1500, isActive: true, turnaroundMinutes: 60 });
       assert.equal((await request(`/api/cars/${id}`, 'PATCH', { ...body, carModelLocationId: otherProvider.body.data.id, transfer: true })).status, 409);
-      const foreign = await prisma.location.findFirstOrThrow({ where: { countryCode: 'US' } });
+      const foreign = await row('SELECT * FROM locations WHERE "countryCode" = $1 ORDER BY id LIMIT 1', ['US']);
       const foreignOffer = await request('/api/cars/offers', 'POST', { carModelId: modelId, locationId: foreign.id,
         providerName: run, hourlyRate: 100, dailyRate: 1500, isActive: true, turnaroundMinutes: 60 });
       assert.equal((await request(`/api/cars/${id}`, 'PATCH', { ...body, carModelLocationId: foreignOffer.body.data.id, transfer: true })).status, 409);
@@ -225,20 +226,20 @@ test('model inventory, allocation and one-way schedules work through HTTP', { sk
       assert.equal((await request(`/api/bookings/${nextBooking.body.data.id}/status`, 'PATCH', { status: 'CANCELLED' })).status, 200);
       const current = { ...body, carModelLocationId: offerB.id };
       assert.equal((await request(`/api/cars/${id}`, 'PATCH', { ...current, isAvailable: false, operationalStatus: 'MAINTENANCE' })).status, 409);
-      await prisma.booking.update({ where: { id: booking.body.data.id }, data: { startDateTime: new Date(Date.now() - 7200000), endDateTime: new Date(Date.now() - 3600000) } });
+      await execute(`UPDATE bookings SET "startDateTime" = $2, "endDateTime" = $3, "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC' WHERE "id" = $1`, [booking.body.data.id, new Date(Date.now() - 7200000), new Date(Date.now() - 3600000)]);
       const overdue = (await request('/api/cars/catalog')).body.data.units.find((unit: any) => unit.id === id);
       assert.equal(overdue.inventoryStatus, 'OVERDUE'); assert.equal(overdue.hasBookings, true);
       assert.equal((await request('/api/bookings', 'POST', { carId: id, ...range(70) })).status, 409);
       assert.equal((await request(`/api/bookings/${nextBooking.body.data.id}/status`, 'PATCH', { status: 'PENDING' })).status, 409);
-      await prisma.booking.update({ where: { id: booking.body.data.id }, data: { status: 'CANCELLED' } });
+      await execute(`UPDATE bookings SET "status" = $2, "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC' WHERE "id" = $1`, [booking.body.data.id, 'CANCELLED']);
     });
   } finally {
-    await prisma.carMovement.deleteMany({ where: { carId: { in: carIds } } });
-    await prisma.booking.deleteMany({ where: { carId: { in: carIds } } });
-    await prisma.car.deleteMany({ where: { id: { in: carIds } } });
-    await prisma.carModelLocation.deleteMany({ where: { carModelId: modelId } });
-    if (modelId) await prisma.carModel.delete({ where: { id: modelId } });
-    await prisma.user.deleteMany({ where: { email: { in: [email, guestEmail] } } });
-    server.close(); await once(server, 'close'); await prisma.$disconnect();
+    await execute('DELETE FROM car_movements WHERE "carId" = ANY($1::text[])', [carIds]);
+    await execute('DELETE FROM bookings WHERE "carId" = ANY($1::text[])', [carIds]);
+    await execute('DELETE FROM cars WHERE "id" = ANY($1::text[])', [carIds]);
+    await execute('DELETE FROM car_model_locations WHERE "carModelId" = $1', [modelId]);
+    if (modelId) await execute('DELETE FROM car_models WHERE "id" = $1', [modelId]);
+    await execute('DELETE FROM users WHERE "email" = ANY($1::text[])', [[email, guestEmail]]);
+    server.close(); await once(server, 'close'); await closeDatabasePool();
   }
 });

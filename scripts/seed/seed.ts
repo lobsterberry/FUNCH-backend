@@ -1,7 +1,9 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { randomBytes, scryptSync } from "node:crypto";
-import { PrismaClient, type VehicleStatus } from "@prisma/client";
+import { closeDatabasePool, withTransaction } from "../../src/lib/db.js";
+import { upsertSeedBookings, upsertSeedCars } from "../../src/lib/db-write.js";
+import { attachLegacyCar, carsByIds, lockCarInventory } from "../../src/lib/inventory-queries.js";
+import { hashPassword } from "../../src/utils/password.js";
 import {
   bookings,
   cars,
@@ -11,7 +13,6 @@ import {
   pricingExamples,
   users,
 } from "./seed-data.js";
-import { attachLegacyCar, lockCarInventory } from "../src/lib/car-inventory.js";
 import {
   expandDemoCars,
   fillMissingDemoVehicleDetails,
@@ -92,9 +93,7 @@ function validateData() {
     );
     assert(pickup && dropoff && pickup.countryCode === dropoff.countryCode);
     assert.equal(booking.timeZone, pickup.timeZone);
-    const requiresAdmin = ["APPROVED", "REJECTED", "COMPLETED"].includes(
-      booking.status!,
-    );
+    const requiresAdmin = ["APPROVED", "REJECTED", "COMPLETED"].includes(booking.status);
     assert.equal(
       Boolean(booking.approvedById && booking.reviewedAt),
       requiresAdmin,
@@ -137,74 +136,69 @@ async function main() {
     seedPassword && seedPassword.length >= 12,
     "Set SEED_USER_PASSWORD to at least 12 characters before seeding demo users",
   );
-  const prisma = new PrismaClient();
+  const seededUsers = await Promise.all(users.map(async (user) => ({
+    ...user,
+    password: await hashPassword(seedPassword),
+  })));
+  const firstNewMemberBooking = Math.min(...bookings
+    .filter(({ userId }) => userId === "seed-user-new-member")
+    .map(({ createdAt }) => createdAt.getTime()));
+
   try {
-    // Stable IDs + upsert refresh only demo rows. Never delete application data.
-    const expansion = await prisma.$transaction(
+    const expansion = await withTransaction(
       async (tx) => {
         await lockCarInventory(tx);
         for (const country of countries) {
-          await tx.country.upsert({
-            where: { code: country.code },
-            create: country,
-            update: country,
-          });
+          await tx.query(`
+            INSERT INTO countries (code, name, "nameTh", flag, "currencyCode", "drivingSide")
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, "nameTh" = EXCLUDED."nameTh",
+              flag = EXCLUDED.flag, "currencyCode" = EXCLUDED."currencyCode", "drivingSide" = EXCLUDED."drivingSide"
+          `, [country.code, country.name, country.nameTh, country.flag, country.currencyCode, country.drivingSide]);
         }
         for (const location of locations) {
-          await tx.location.upsert({
-            where: { id: location.id },
-            create: location,
-            update: location,
-          });
+          await tx.query(`
+            INSERT INTO locations (id, name, "nameTh", city, "cityTh", "countryCode", "timeZone", "airportCode")
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, "nameTh" = EXCLUDED."nameTh",
+              city = EXCLUDED.city, "cityTh" = EXCLUDED."cityTh", "countryCode" = EXCLUDED."countryCode",
+              "timeZone" = EXCLUDED."timeZone", "airportCode" = EXCLUDED."airportCode"
+          `, [location.id, location.name, location.nameTh, location.city, location.cityTh,
+            location.countryCode, location.timeZone, location.airportCode]);
         }
-        for (const user of users) {
-          const salt = randomBytes(16).toString("hex");
-          const password = `scrypt$${salt}$${scryptSync(seedPassword, salt, 64).toString("hex")}`;
-          const firstBooking = bookings
-            .filter((row) => row.userId === user.id)
-            .map((row) => new Date(row.createdAt!).getTime())
-            .sort((a, b) => a - b)[0];
-          const createdAt =
-            user.id === "seed-user-new-member"
-              ? new Date(firstBooking)
-              : new Date("2026-09-01T00:00:00Z");
-          // Preserve existing password hashes on reruns.
-          await tx.user.upsert({
-            where: { id: user.id },
-            create: { ...user, password, createdAt },
-            update: user,
-          });
+        for (const user of seededUsers) {
+          const createdAt = user.id === "seed-user-new-member"
+            ? new Date(firstNewMemberBooking).toISOString()
+            : "2026-09-01T00:00:00.000Z";
+          // Only new accounts receive the seed password or the original creation date.
+          await tx.query(`
+            INSERT INTO users (id, email, password, name, "firstName", "lastName", "phoneNumber",
+              role, "isActive", "createdAt", "updatedAt")
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, clock_timestamp() AT TIME ZONE 'UTC')
+            ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, name = EXCLUDED.name,
+              "firstName" = EXCLUDED."firstName", "lastName" = EXCLUDED."lastName",
+              "phoneNumber" = EXCLUDED."phoneNumber", role = EXCLUDED.role,
+              "isActive" = EXCLUDED."isActive", "updatedAt" = EXCLUDED."updatedAt"
+          `, [user.id, user.email, user.password, user.name, user.firstName, user.lastName,
+            user.phoneNumber, user.role, user.isActive, createdAt]);
         }
-        for (const { exteriorColor, vin, odometerKm, ...vehicle } of cars) {
-          const values = {
-            ...vehicle,
-            operationalStatus: (vehicle.isAvailable
-              ? "AVAILABLE"
-              : "INACTIVE") as VehicleStatus,
-          };
-          const saved = await tx.car.upsert({
-            where: { id: vehicle.id },
-            create: { ...values, exteriorColor, vin, odometerKm },
-            update: values,
-          });
-          await attachLegacyCar(tx, saved);
+        const saved = await upsertSeedCars(tx, cars.map((vehicle) => ({
+          ...vehicle,
+          operationalStatus: vehicle.isAvailable ? "AVAILABLE" : "INACTIVE",
+        })));
+        for (const car of await carsByIds(tx, saved.map(({ id }) => id))) {
+          await attachLegacyCar(tx, car);
         }
-        for (const booking of bookings) {
-          await tx.booking.upsert({
-            where: { id: booking.id },
-            create: booking,
-            update: booking,
-          });
-        }
-        const result = await expandDemoCars(tx);
+        await upsertSeedBookings(tx, bookings);
+        const expansion = await expandDemoCars(tx);
         const filledVehicleDetails = await fillMissingDemoVehicleDetails(tx);
-        return { ...result, filledVehicleDetails };
+        return { ...expansion, filledVehicleDetails };
       },
-      { timeout: 60000 },
+      { timeoutMs: 60_000 },
     );
     console.log("Seed complete:", summary, expansion);
   } finally {
-    await prisma.$disconnect();
+    await closeDatabasePool();
   }
 }
 

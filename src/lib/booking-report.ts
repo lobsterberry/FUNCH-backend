@@ -1,4 +1,4 @@
-import { Prisma, type BookingStatus } from "@prisma/client";
+import type { BookingSource, BookingStatus } from "./db-types.js";
 import { z } from "zod";
 
 export const REPORT_TIME_ZONE = "Asia/Bangkok";
@@ -77,40 +77,27 @@ export function comparisonRange(
   };
 }
 
-export const reportSelect = {
-  id: true,
-  bookingNumber: true,
-  createdAt: true,
-  startDateTime: true,
-  endDateTime: true,
-  totalPrice: true,
-  currencyCode: true,
-  status: true,
-  source: true,
-  timeZone: true,
-  carId: true,
-  carSnapshot: true,
-  calculatedDays: true,
-  calculatedHours: true,
+type ReportCountry = { code: string; nameTh: string; flag: string };
+export type ReportBooking = {
+  id: string;
+  bookingNumber: string;
+  createdAt: Date;
+  startDateTime: Date;
+  endDateTime: Date;
+  totalPrice: string;
+  currencyCode: string;
+  status: BookingStatus;
+  source: BookingSource;
+  timeZone: string;
+  carId: string;
+  carSnapshot: unknown;
+  calculatedDays: number;
+  calculatedHours: number;
   car: {
-    select: {
-      brand: true,
-      model: true,
-      licensePlate: true,
-      country: true,
-      countryInfo: { select: { code: true, nameTh: true, flag: true } },
-    },
-  },
-  pickupLocation: {
-    select: {
-      nameTh: true,
-      country: { select: { code: true, nameTh: true, flag: true } },
-    },
-  },
-} satisfies Prisma.BookingSelect;
-export type ReportBooking = Prisma.BookingGetPayload<{
-  select: typeof reportSelect;
-}>;
+    brand: string; model: string; licensePlate: string; country: string; countryInfo: ReportCountry;
+  };
+  pickupLocation: { nameTh: string; country: ReportCountry } | null;
+};
 export const statusLabels: Record<BookingStatus, string> = {
   PENDING: "รออนุมัติ",
   APPROVED: "อนุมัติแล้ว",
@@ -118,7 +105,24 @@ export const statusLabels: Record<BookingStatus, string> = {
   CANCELLED: "ยกเลิก",
   REJECTED: "ไม่อนุมัติ",
 };
-const zero = () => new Prisma.Decimal(0);
+// NUMERIC(12, 2) stores whole cents. Keep exact sums and round averages half up.
+function cents(value: string) {
+  const [whole, fraction = ""] = value.replace(/^-/, "").split(".");
+  const amount = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+  return value.startsWith("-") ? -amount : amount;
+}
+
+function money(amount: bigint) {
+  const digits = (amount < 0n ? -amount : amount).toString().padStart(3, "0");
+  return (amount < 0n ? "-" : "") + digits.slice(0, -2) + "." + digits.slice(-2);
+}
+
+function averageCents(amount: bigint, count: number) {
+  const divisor = BigInt(count);
+  const magnitude = amount < 0n ? -amount : amount;
+  const rounded = (magnitude + divisor / 2n) / divisor;
+  return amount < 0n ? -rounded : rounded;
+}
 const confirmed = (status: BookingStatus) =>
   status === "APPROVED" || status === "COMPLETED";
 
@@ -130,11 +134,11 @@ export function reportSummary(bookings: ReportBooking[]) {
     string,
     {
       currency: string;
-      total: Prisma.Decimal;
-      approved: Prisma.Decimal;
-      completed: Prisma.Decimal;
-      pending: Prisma.Decimal;
-      excluded: Prisma.Decimal;
+      total: bigint;
+      approved: bigint;
+      completed: bigint;
+      pending: bigint;
+      excluded: bigint;
       confirmedCount: number;
     }
   >();
@@ -144,16 +148,16 @@ export function reportSummary(bookings: ReportBooking[]) {
     if (!totals) {
       totals = {
         currency: booking.currencyCode,
-        total: zero(),
-        approved: zero(),
-        completed: zero(),
-        pending: zero(),
-        excluded: zero(),
+        total: 0n,
+        approved: 0n,
+        completed: 0n,
+        pending: 0n,
+        excluded: 0n,
         confirmedCount: 0,
       };
       currencies.set(booking.currencyCode, totals);
     }
-    totals.total = totals.total.add(booking.totalPrice);
+    totals.total = totals.total + cents(booking.totalPrice);
     if (confirmed(booking.status)) totals.confirmedCount++;
     const key =
       booking.status === "APPROVED"
@@ -163,7 +167,7 @@ export function reportSummary(bookings: ReportBooking[]) {
           : booking.status === "PENDING"
             ? "pending"
             : "excluded";
-    totals[key] = totals[key].add(booking.totalPrice);
+    totals[key] = totals[key] + cents(booking.totalPrice);
   }
   const confirmedCount = statuses.APPROVED + statuses.COMPLETED;
   return {
@@ -177,17 +181,14 @@ export function reportSummary(bookings: ReportBooking[]) {
       .sort((a, b) => a.currency.localeCompare(b.currency))
       .map((item) => ({
         currency: item.currency,
-        total: item.total.toFixed(2),
-        approved: item.approved.toFixed(2),
-        completed: item.completed.toFixed(2),
-        pending: item.pending.toFixed(2),
-        excluded: item.excluded.toFixed(2),
-        confirmed: item.approved.add(item.completed).toFixed(2),
+        total: money(item.total),
+        approved: money(item.approved),
+        completed: money(item.completed),
+        pending: money(item.pending),
+        excluded: money(item.excluded),
+        confirmed: money(item.approved + item.completed),
         average: item.confirmedCount
-          ? item.approved
-              .add(item.completed)
-              .div(item.confirmedCount)
-              .toFixed(2)
+          ? money(averageCents(item.approved + item.completed, item.confirmedCount))
           : "0.00",
       })),
   };
@@ -198,7 +199,7 @@ export function bookingRow(booking: ReportBooking) {
     booking.carSnapshot &&
     typeof booking.carSnapshot === "object" &&
     !Array.isArray(booking.carSnapshot)
-      ? booking.carSnapshot
+      ? (booking.carSnapshot as Record<string, unknown>)
       : {};
   const text = (field: string, fallback: string) =>
     typeof snapshot[field] === "string"
@@ -222,7 +223,7 @@ export function bookingRow(booking: ReportBooking) {
     status: booking.status,
     source: booking.source,
     currency: booking.currencyCode,
-    amount: booking.totalPrice.toFixed(2),
+    amount: money(cents(booking.totalPrice)),
     timeZone: booking.timeZone,
   };
 }
@@ -231,7 +232,7 @@ export function buildReport(bookings: ReportBooking[], input: ReportInput) {
   const monthly = Date.parse(input.end) - Date.parse(input.start) >= 62 * DAY;
   const trend = new Map<
     string,
-    { date: string; bookings: number; amounts: Map<string, Prisma.Decimal> }
+    { date: string; bookings: number; amounts: Map<string, bigint> }
   >();
   for (let day = input.start; day <= input.end; day = shiftDay(day, 1)) {
     const key = monthly ? day.slice(0, 7) : day;
@@ -245,7 +246,7 @@ export function buildReport(bookings: ReportBooking[], input: ReportInput) {
       nameTh: string;
       flag: string;
       count: number;
-      amounts: Map<string, Prisma.Decimal>;
+      amounts: Map<string, bigint>;
     }
   >();
   const cars = new Map<
@@ -256,7 +257,7 @@ export function buildReport(bookings: ReportBooking[], input: ReportInput) {
       licensePlate: string;
       currency: string;
       count: number;
-      amount: Prisma.Decimal;
+      amount: bigint;
     }
   >();
   const sources = { EXISTING_MEMBER: 0, REGISTER_AND_BOOK: 0 };
@@ -278,7 +279,7 @@ export function buildReport(bookings: ReportBooking[], input: ReportInput) {
     for (const amounts of [bucket.amounts, country.amounts])
       amounts.set(
         booking.currencyCode,
-        (amounts.get(booking.currencyCode) ?? zero()).add(booking.totalPrice),
+        (amounts.get(booking.currencyCode) ?? 0n) + cents(booking.totalPrice),
       );
     // A car may have bookings in multiple currencies; rank each currency separately.
     const key = `${booking.carId}:${booking.currencyCode}`;
@@ -290,16 +291,16 @@ export function buildReport(bookings: ReportBooking[], input: ReportInput) {
         licensePlate: row.licensePlate,
         currency: booking.currencyCode,
         count: 0,
-        amount: zero(),
+        amount: 0n,
       };
       cars.set(key, car);
     }
     car.count++;
-    car.amount = car.amount.add(booking.totalPrice);
+    car.amount = car.amount + cents(booking.totalPrice);
   }
-  const amountsJson = (values: Map<string, Prisma.Decimal>) =>
+  const amountsJson = (values: Map<string, bigint>) =>
     Object.fromEntries(
-      [...values].map(([key, value]) => [key, value.toFixed(2)]),
+      [...values].map(([key, value]) => [key, money(value)]),
     );
   const totalPages = Math.max(1, Math.ceil(bookings.length / input.pageSize));
   const page = Math.min(input.page, totalPages);
@@ -317,10 +318,10 @@ export function buildReport(bookings: ReportBooking[], input: ReportInput) {
       .sort(
         (a, b) =>
           a.currency.localeCompare(b.currency) ||
-          b.amount.comparedTo(a.amount) ||
+          (a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0) ||
           a.carId.localeCompare(b.carId),
       )
-      .map((car) => ({ ...car, amount: car.amount.toFixed(2) })),
+      .map((car) => ({ ...car, amount: money(car.amount) })),
     sources,
     pricing: { daily, hourlyOnly: bookings.length - daily },
     bookings: bookings

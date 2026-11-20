@@ -1,22 +1,6 @@
-import { Prisma, type PrismaClient } from "@prisma/client";
-
-export type InventoryTx = Prisma.TransactionClient;
-export const offerInclude = {
-  carModel: true,
-  location: { include: { country: true } },
-} as const;
-export const inventoryInclude = {
-  carModelLocation: { include: offerInclude },
-  location: true,
-  countryInfo: true,
-} as const;
 export const reservedStatuses = ["PENDING", "APPROVED"] as const;
 
-// Keep a single lock order for offer edits, allocation, status changes and transfers.
-// Inventory writes share one transaction advisory lock; searches remain lock-free.
-export async function lockCarInventory(tx: InventoryTx) {
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(64172839)`;
-}
+export const inventoryLockKey = 64172839;
 
 export const modelFields = [
   "brand",
@@ -46,47 +30,6 @@ export function modelData(car: Record<string, any>) {
       .filter((key) => car[key] !== undefined)
       .map((key) => [key, car[key]]),
   );
-}
-
-// Compatibility bridge for old inventory clients and idempotent demo seeding.
-// New clients explicitly create a model, an offer, then individual registrations.
-export async function attachLegacyCar(
-  tx: InventoryTx,
-  car: any,
-  imageUrl: string | null = null,
-) {
-  if (!car.locationId) return car;
-  const data = { ...modelData(car), imageUrl };
-  const where: any = { ...data };
-  where.featureCodes = { equals: car.featureCodes };
-  where.categories = { equals: car.categories };
-  where.options =
-    car.options == null ? { equals: Prisma.DbNull } : { equals: car.options };
-  const model =
-    (await tx.carModel.findFirst({ where })) ??
-    (await tx.carModel.create({
-      data: {
-        ...data,
-        options: car.options ?? Prisma.DbNull,
-      } as Prisma.CarModelCreateInput,
-    }));
-  const offerData = {
-    carModelId: model.id,
-    locationId: car.locationId,
-    providerName: car.providerName || "FUNCH Rental",
-    hourlyRate: car.hourlyRate,
-    dailyRate: car.dailyRate,
-    currencyCode: car.currencyCode,
-  };
-  const offer =
-    (await tx.carModelLocation.findFirst({ where: offerData })) ??
-    (await tx.carModelLocation.create({
-      data: { ...offerData, turnaroundMinutes: 0 },
-    }));
-  return tx.car.update({
-    where: { id: car.id },
-    data: { carModelLocationId: offer.id },
-  });
 }
 
 export function legacyValues(offer: any) {
@@ -146,28 +89,6 @@ export function validItinerary(
       rental.endDateTime.getTime() + rental.turnaroundMinutes * 60_000;
   }
   return true;
-}
-
-export async function candidateCars(db: InventoryTx | PrismaClient, offer: any) {
-  return db.car.findMany({
-    where: {
-      isAvailable: true,
-      operationalStatus: "AVAILABLE",
-      country: offer.location.countryCode,
-      carModelLocation: {
-        carModelId: offer.carModelId,
-        providerName: offer.providerName,
-      },
-    },
-    include: {
-      ...inventoryInclude,
-      bookings: {
-        where: { status: { in: [...reservedStatuses] } },
-        orderBy: { startDateTime: "asc" },
-      },
-    },
-    orderBy: { id: "asc" },
-  });
 }
 
 export function effectiveCar(car: any) {

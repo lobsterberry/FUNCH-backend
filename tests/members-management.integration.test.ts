@@ -1,3 +1,5 @@
+import { count, execute, fixtureBooking, fixtureCar, fixtureUser, row } from './fixtures.js';
+import { closeDatabasePool } from '../src/lib/db.js';
 import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +12,6 @@ test('admin member management with PostgreSQL and Auth.js', { skip: !process.env
   process.env.AUTH_SECRET = 'member-integration-test-secret-1234567890';
   process.env.NODE_ENV = 'test';
   const { createApp } = await import('../src/app.js');
-  const { default: prisma } = await import('../src/lib/prisma.js');
   const { hashPassword, verifyPassword } = await import('../src/utils/password.js');
   const tag = `members-${randomUUID()}`;
   const password = 'MemberTestPassword123!';
@@ -43,11 +44,11 @@ test('admin member management with PostgreSQL and Auth.js', { skip: !process.env
   let memberId = ''; let carId = '';
   try {
     const hash = await hashPassword(password);
-    const actor = await prisma.user.create({ data: { email: `${tag}-admin@funch.example`, name: `${tag} admin`, password: hash, role: 'ADMIN' } });
+    const actor = await fixtureUser({ email: `${tag}-admin@funch.example`, name: `${tag} admin`, password: hash, role: 'ADMIN' });
     await admin.login(actor.email);
     const input = { email: `${tag}-user@funch.example`, name: `${tag} Customer`, phoneNumber: '+66 81 234 5678',
       role: 'USER', isActive: true, password };
-    const ordinary = await prisma.user.create({ data: { email: `${tag}-ordinary@funch.example`, name: `${tag} Ordinary`, password: hash } });
+    const ordinary = await fixtureUser({ email: `${tag}-ordinary@funch.example`, name: `${tag} Ordinary`, password: hash });
     await member.login(ordinary.email);
 
     await t.test('anonymous and non-admin users cannot read or write member information', async () => {
@@ -65,7 +66,7 @@ test('admin member management with PostgreSQL and Auth.js', { skip: !process.env
       assert.equal(created.data.data.email, input.email);
       assert.equal('password' in created.data.data, false);
       assert.equal('sessionVersion' in created.data.data, false);
-      const stored = await prisma.user.findUniqueOrThrow({ where: { id: memberId } });
+      const stored = await row('SELECT * FROM users WHERE "id" = $1', [memberId]);
       assert.notEqual(stored.password, password);
       assert.equal(await verifyPassword(password, stored.password), true);
       assert.equal((await admin.request(prefix, 'POST', input)).status, 409);
@@ -101,13 +102,13 @@ test('admin member management with PostgreSQL and Auth.js', { skip: !process.env
       assert.equal((await admin.request(`${prefix}?pageSize=101`)).status, 400);
     });
     await t.test('history retains booking snapshots and spending excludes pending, rejected and cancelled bookings', async () => {
-      carId = (await prisma.car.create({ data: { brand: 'History', model: 'Current', year: 2026,
-        licensePlate: tag, country: 'JP', hourlyRate: 100, dailyRate: 1000 } })).id;
+      carId = (await fixtureCar({ brand: 'History', model: 'Current', year: 2026,
+        licensePlate: tag, country: 'JP', hourlyRate: 100, dailyRate: 1000 })).id;
       for (const [status, price] of [['APPROVED', 1500], ['COMPLETED', 2000], ['PENDING', 500], ['REJECTED', 700], ['CANCELLED', 900]] as const) {
-        await prisma.booking.create({ data: { userId: memberId, carId, status, totalPrice: price,
+        await fixtureBooking({ userId: memberId, carId, status, totalPrice: price,
           startDateTime: new Date('2026-10-01T00:00:00Z'), endDateTime: new Date('2026-10-02T00:00:00Z'),
           carSnapshot: { brand: 'Original', model: 'Snapshot', licensePlate: 'ORIGINAL' },
-          timeZone: 'Asia/Tokyo', driverName: 'Original Driver', internationalDrivingPermit: 'TEST-IDP' } });
+          timeZone: 'Asia/Tokyo', driverName: 'Original Driver', internationalDrivingPermit: 'TEST-IDP' });
       }
       const detail = await admin.request(`${prefix}/${memberId}?pageSize=2`);
       assert.equal(detail.data.data.bookingCount, 5);
@@ -121,9 +122,9 @@ test('admin member management with PostgreSQL and Auth.js', { skip: !process.env
       assert.equal(list.data.data[0].bookingCount, 5);
     });
     await t.test('profile edits preserve password and self-protection prevents admin lockout', async () => {
-      const before = await prisma.user.findUniqueOrThrow({ where: { id: memberId } });
+      const before = await row('SELECT * FROM users WHERE "id" = $1', [memberId]);
       assert.equal((await admin.request(`${prefix}/${memberId}`, 'PATCH', { name: 'Updated Customer', phoneNumber: '' })).status, 200);
-      const after = await prisma.user.findUniqueOrThrow({ where: { id: memberId } });
+      const after = await row('SELECT * FROM users WHERE "id" = $1', [memberId]);
       assert.equal(after.name, 'Updated Customer'); assert.equal(after.phoneNumber, null);
       assert.equal(after.password, before.password); assert.equal(after.sessionVersion, before.sessionVersion);
       assert.equal((await admin.request(`${prefix}/${actor.id}`, 'PATCH', { role: 'USER' })).status, 409);
@@ -133,17 +134,17 @@ test('admin member management with PostgreSQL and Auth.js', { skip: !process.env
     await t.test('suspension invalidates sessions permanently and reactivation preserves bookings', async () => {
       const device = client(); const secondDevice = client();
       await device.login(input.email); await secondDevice.login(input.email);
-      const before = await prisma.user.findUniqueOrThrow({ where: { id: memberId } });
+      const before = await row('SELECT * FROM users WHERE "id" = $1', [memberId]);
       assert.equal((await admin.request(`${prefix}/${memberId}`, 'PATCH', { isActive: false })).status, 200);
       assert.equal((await device.request('/api/auth/me')).status, 401);
       assert.equal((await secondDevice.request('/api/auth/me')).status, 401);
-      const suspended = await prisma.user.findUniqueOrThrow({ where: { id: memberId } });
+      const suspended = await row('SELECT * FROM users WHERE "id" = $1', [memberId]);
       assert.equal(suspended.sessionVersion, before.sessionVersion + 1);
       assert.equal((await admin.request(`${prefix}/${memberId}`, 'PATCH', { isActive: true })).status, 200);
       assert.equal((await device.request('/api/auth/me')).status, 401);
       await device.login(input.email);
       assert.equal((await device.request('/api/auth/me')).status, 200);
-      assert.equal(await prisma.booking.count({ where: { userId: memberId } }), 5);
+      assert.equal(await count('SELECT count(*) AS count FROM bookings WHERE "userId" = $1', [memberId]), 5);
     });
     await t.test('role changes invalidate existing sessions and apply on fresh login', async () => {
       const device = client(); await device.login(input.email);
@@ -155,8 +156,8 @@ test('admin member management with PostgreSQL and Auth.js', { skip: !process.env
       assert.equal((await device.request(prefix)).status, 401);
     });
     await t.test('concurrent admins cannot revoke one another using stale authorization', async () => {
-      const a = await prisma.user.create({ data: { email: `${tag}-a@funch.example`, name: tag, password: hash, role: 'ADMIN' } });
-      const b = await prisma.user.create({ data: { email: `${tag}-b@funch.example`, name: tag, password: hash, role: 'ADMIN' } });
+      const a = await fixtureUser({ email: `${tag}-a@funch.example`, name: tag, password: hash, role: 'ADMIN' });
+      const b = await fixtureUser({ email: `${tag}-b@funch.example`, name: tag, password: hash, role: 'ADMIN' });
       const first = client(); const second = client(); await first.login(a.email); await second.login(b.email);
       const results = await Promise.all([
         first.request(`${prefix}/${b.id}`, 'PATCH', { role: 'USER' }),
@@ -164,11 +165,11 @@ test('admin member management with PostgreSQL and Auth.js', { skip: !process.env
       ]);
       assert.equal(results.filter((result) => result.status === 200).length, 1);
       assert.equal(results.filter((result) => [401, 403].includes(result.status)).length, 1);
-      assert.equal(await prisma.user.count({ where: { id: { in: [a.id, b.id] }, role: 'ADMIN', isActive: true } }), 1);
+      assert.equal(await count('SELECT count(*) AS count FROM users WHERE "id" = ANY($1::text[]) AND "role" = $2 AND "isActive" = $3', [[a.id, b.id], 'ADMIN', true]), 1);
     });
   } finally {
-    if (carId) { await prisma.booking.deleteMany({ where: { carId } }); await prisma.car.deleteMany({ where: { id: carId } }); }
-    await prisma.user.deleteMany({ where: { email: { startsWith: tag } } });
-    server.close(); await prisma.$disconnect();
+    if (carId) { await execute('DELETE FROM bookings WHERE "carId" = $1', [carId]); await execute('DELETE FROM cars WHERE "id" = $1', [carId]); }
+    await execute('DELETE FROM users WHERE starts_with("email", $1)', [tag]);
+    server.close(); await closeDatabasePool();
   }
 });

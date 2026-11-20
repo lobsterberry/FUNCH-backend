@@ -1,22 +1,19 @@
 import { Router } from "express";
-import { BookingStatus, Prisma } from "@prisma/client";
+import { bookingStatuses, type BookingStatus } from "../lib/db-types.js";
+import type { PoolClient } from "pg";
 import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
-import prisma from "../lib/prisma.js";
+import { databasePool, required, withTransaction } from "../lib/db.js";
+import { insertRows, updateRows } from "../lib/db-write.js";
+import { adminBookings, bookingHistory, createBooking, findBooking } from "../lib/booking-queries.js";
+import {
+  branchOffer, candidateCars, findCar, findLocation, findOffer, lockCar, lockCarInventory, reservations,
+} from "../lib/inventory-queries.js";
+import { createUser } from "../lib/users.js";
 import { registrationSchema, registrationData } from "../lib/registration.js";
 import { requireAdmin, requireAuth, requireJson } from "../middleware/auth.js";
 import { calculateCarRentalPrice } from "../utils/pricing.js";
-import {
-  candidateCars,
-  canSchedule,
-  effectiveCar,
-  inventoryInclude,
-  lockCarInventory,
-  offerInclude,
-  reservedStatuses,
-  validItinerary,
-  type InventoryTx,
-} from "../lib/car-inventory.js";
+import { canSchedule, effectiveCar, reservedStatuses, validItinerary } from "../lib/car-inventory.js";
 
 const router = Router();
 const rentalFields = {
@@ -73,30 +70,12 @@ class RentalError extends Error {
   }
 }
 type RentalInput = z.infer<typeof rentalSchema>;
-async function rentalSelection(tx: InventoryTx, input: RentalInput) {
-  const physical = input.carId
-    ? await tx.car.findUnique({
-        where: { id: input.carId },
-        include: inventoryInclude,
-      })
-    : null;
-  let offer = input.carModelLocationId
-    ? await tx.carModelLocation.findUnique({
-        where: { id: input.carModelLocationId },
-        include: offerInclude,
-      })
-    : null;
+async function rentalSelection(tx: PoolClient, input: RentalInput) {
+  const physical = input.carId ? await findCar(tx, input.carId) : null;
+  let offer = input.carModelLocationId ? await findOffer(tx, input.carModelLocationId) : null;
   if (physical?.carModelLocation && physical.locationId) {
-    offer = await tx.carModelLocation.findFirst({
-      where: {
-        carModelId: physical.carModelLocation.carModelId,
-        providerName: physical.carModelLocation.providerName,
-        locationId: physical.locationId,
-        isActive: true,
-      },
-      include: offerInclude,
-      orderBy: { id: "asc" },
-    });
+    offer = await branchOffer(tx, physical.carModelLocation.carModelId, physical.locationId,
+      physical.carModelLocation.providerName);
     if (!offer) throw new RentalError(409, "Car is unavailable");
   }
   if (!physical && !offer) throw new RentalError(404, "Car or offer not found");
@@ -114,27 +93,16 @@ async function rentalSelection(tx: InventoryTx, input: RentalInput) {
   ) {
     throw new RentalError(400, "Pickup location does not match the car");
   }
-  const pickup = await tx.location.findUniqueOrThrow({
-    where: { id: pickupLocationId },
-  });
+  const pickup = required(await findLocation(tx, pickupLocationId));
   const dropoffLocationId = input.dropoffLocationId || pickup.id;
-  const dropoff = await tx.location.findUnique({
-    where: { id: dropoffLocationId },
-  });
+  const dropoff = await findLocation(tx, dropoffLocationId);
   if (!dropoff || dropoff.countryCode !== pickup.countryCode)
     throw new RentalError(400, "Invalid dropoff location");
   const modelId = offer?.carModelId ?? physical?.carModelLocation?.carModelId;
   if (
     dropoff.id !== pickup.id &&
     (!modelId ||
-      !(await tx.carModelLocation.findFirst({
-        where: {
-          carModelId: modelId,
-          locationId: dropoff.id,
-          providerName: selected.providerName,
-          isActive: true,
-        },
-      })))
+      !(await branchOffer(tx, modelId, dropoff.id, selected.providerName)))
   )
     throw new RentalError(
       400,
@@ -163,7 +131,7 @@ async function rentalSelection(tx: InventoryTx, input: RentalInput) {
 router.post("/calculate", requireJson, async (req, res, next) => {
   try {
     const input = rentalSchema.parse(req.body);
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await withTransaction(async (tx) => {
       const { selected, offer, physical, pricing } = await rentalSelection(
         tx,
         input,
@@ -195,7 +163,7 @@ router.get("/", requireAdmin, async (req, res, next) => {
     const input = z
       .object({
         status: z
-          .union([z.nativeEnum(BookingStatus), z.literal("all")])
+          .union([z.enum(bookingStatuses), z.literal("all")])
           .default("all"),
         search: z.string().trim().max(254).default(""),
         country: z
@@ -207,89 +175,7 @@ router.get("/", requireAdmin, async (req, res, next) => {
         pageSize: z.coerce.number().int().min(1).max(100).optional(),
       })
       .parse(req.query);
-    const where: Prisma.BookingWhereInput = {
-      ...(input.status === "all" ? {} : { status: input.status }),
-      ...(input.country === "all" ? {} : { car: { country: input.country } }),
-      ...(input.search
-        ? {
-            OR: [
-              {
-                bookingNumber: { contains: input.search, mode: "insensitive" },
-              },
-              {
-                user: {
-                  OR: ["name", "email", "phoneNumber"].map((field) => ({
-                    [field]: { contains: input.search, mode: "insensitive" },
-                  })),
-                },
-              },
-              {
-                car: {
-                  OR: ["brand", "model", "licensePlate"].map((field) => ({
-                    [field]: { contains: input.search, mode: "insensitive" },
-                  })),
-                },
-              },
-              { driverName: { contains: input.search, mode: "insensitive" } },
-            ],
-          }
-        : {}),
-    };
-    const result = await prisma.$transaction(
-      async (tx) => {
-        const total = await tx.booking.count({ where });
-        // Keep the existing unpaginated API contract for callers that omit pagination.
-        const paginated =
-          input.page !== undefined || input.pageSize !== undefined;
-        const pageSize = input.pageSize ?? 10;
-        const totalPages = Math.max(1, Math.ceil(total / pageSize));
-        const page = Math.min(input.page ?? 1, totalPages);
-        const orderBy: Prisma.BookingOrderByWithRelationInput[] =
-          input.sort === "pickup"
-            ? [{ startDateTime: "asc" }, { id: "asc" }]
-            : input.sort === "value"
-              ? [{ totalPrice: "desc" }, { id: "asc" }]
-              : [{ createdAt: "desc" }, { id: "asc" }];
-        const bookings = await tx.booking.findMany({
-          where,
-          include: {
-            car: true,
-            pickupLocation: true,
-            dropoffLocation: true,
-            user: {
-              select: { id: true, name: true, email: true, phoneNumber: true },
-            },
-            approvedBy: { select: { id: true, name: true, email: true } },
-          },
-          orderBy,
-          ...(paginated ? { skip: (page - 1) * pageSize, take: pageSize } : {}),
-        });
-        const groups = await tx.booking.groupBy({
-          by: ["status"],
-          _count: { _all: true },
-        });
-        const summary = Object.fromEntries(
-          Object.values(BookingStatus).map((status) => [
-            status,
-            groups.find((group) => group.status === status)?._count._all ?? 0,
-          ]),
-        );
-        const countries = await tx.country.findMany({
-          select: { code: true, name: true, nameTh: true, flag: true },
-          orderBy: { name: "asc" },
-        });
-        return {
-          data: bookings,
-          count: total,
-          summary,
-          countries,
-          ...(paginated
-            ? { pagination: { page, pageSize, total, totalPages } }
-            : {}),
-        };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
-    );
+    const result = await withTransaction((tx) => adminBookings(tx, input), { repeatableRead: true });
     res.set("Cache-Control", "no-store").json({ success: true, ...result });
   } catch (error) {
     next(error);
@@ -298,26 +184,7 @@ router.get("/", requireAdmin, async (req, res, next) => {
 
 router.get("/mine", requireAuth, async (_req, res, next) => {
   try {
-    const location = { name: true, nameTh: true, timeZone: true } as const;
-    const bookings = await prisma.booking.findMany({
-      where: { userId: res.locals.session.user.id },
-      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
-      select: {
-        id: true,
-        bookingNumber: true,
-        status: true,
-        createdAt: true,
-        startDateTime: true,
-        endDateTime: true,
-        totalPrice: true,
-        currencyCode: true,
-        timeZone: true,
-        carSnapshot: true,
-        car: { select: { brand: true, model: true } },
-        pickupLocation: { select: location },
-        dropoffLocation: { select: location },
-      },
-    });
+    const bookings = await bookingHistory(databasePool(), res.locals.session.user.id);
     res.set("Cache-Control", "no-store").json({ success: true, data: bookings });
   } catch (error) {
     next(error);
@@ -362,20 +229,18 @@ router.post("/", requireJson, bookingLimiter, async (req, res, next) => {
       return;
     }
     const expectedCar = input.carId
-      ? await prisma.car.findUnique({ where: { id: input.carId } })
+      ? await findCar(databasePool(), input.carId)
       : null;
     const newUserData = input.registerUser
       ? await registrationData(input.registerUser)
       : undefined;
-    const booking = await prisma.$transaction(
+    const booking = await withTransaction(
       async (tx) => {
         await lockCarInventory(tx);
         if (input.carId)
-          await tx.$queryRaw`SELECT id FROM cars WHERE id = ${input.carId} FOR UPDATE`;
+          await lockCar(tx, input.carId);
         if (input.carId && expectedCar) {
-          const current = await tx.car.findUnique({
-            where: { id: input.carId },
-          });
+          const current = await findCar(tx, input.carId);
           if (
             !current ||
             current.updatedAt.getTime() !== expectedCar.updatedAt.getTime()
@@ -404,20 +269,15 @@ router.post("/", requireJson, bookingLimiter, async (req, res, next) => {
           : await candidateCars(tx, offer!);
         let allocated: (typeof candidates)[number] | null = null;
         for (const candidate of candidates) {
-          await tx.$queryRaw`SELECT id FROM cars WHERE id = ${candidate.id} FOR UPDATE`;
-          const current = await tx.car.findUniqueOrThrow({
-            where: { id: candidate.id },
-            include: inventoryInclude,
-          });
+          await lockCar(tx, candidate.id);
+          const current = required(await findCar(tx, candidate.id));
           if (
             !current.isAvailable ||
             current.operationalStatus !== "AVAILABLE" ||
             current.updatedAt.getTime() !== candidate.updatedAt.getTime()
           )
             continue;
-          const rentals = await tx.booking.findMany({
-            where: { carId: current.id, status: { in: [...reservedStatuses] } },
-          });
+          const rentals = await reservations(tx, current.id);
           if (
             canSchedule(
               current.locationId,
@@ -437,50 +297,44 @@ router.post("/", requireJson, bookingLimiter, async (req, res, next) => {
           );
         const specification = offer?.carModel ?? effectiveCar(allocated);
         const userId =
-          memberId ?? (await tx.user.create({ data: newUserData! })).id;
-        return tx.booking.create({
-          data: {
-            userId,
-            carId: allocated.id,
-            carModelLocationId: offer?.id ?? allocated.carModelLocationId,
-            ...request,
-            calculatedDays: pricing.days,
-            calculatedHours: pricing.hours,
-            totalPrice: pricing.totalPrice,
-            pricingDetails: { breakdown: pricing.breakdown },
-            hourlyRate: selected.hourlyRate,
-            dailyRate: selected.dailyRate,
-            currencyCode: selected.currencyCode,
-            timeZone: pickup.timeZone,
-            status: "PENDING",
-            source: newUserData ? "REGISTER_AND_BOOK" : "EXISTING_MEMBER",
-            driverName: input.driverName,
-            internationalDrivingPermit: input.internationalDrivingPermit,
-            carSnapshot: {
-              brand: specification.brand,
-              model: specification.model,
-              year: allocated.year,
-              licensePlate: allocated.licensePlate,
-              providerName: selected.providerName || "FUNCH Rental",
-              seats: specification.seats,
-              transmission: specification.transmission,
-              fuelType: specification.fuelType,
-              steeringSide: specification.steeringSide,
-              pickupLocationId: pickup.id,
-              pickupLocationName: pickup.name,
-              pickupTimeZone: pickup.timeZone,
-              dropoffLocationId: dropoff.id,
-              dropoffLocationName: dropoff.name,
-              dropoffTimeZone: dropoff.timeZone,
-            },
-          },
-          include: {
-            car: true,
-            user: { select: { id: true, name: true, email: true } },
+          memberId ?? (await createUser(newUserData!, tx)).id;
+        return createBooking(tx, {
+          userId,
+          carId: allocated.id,
+          carModelLocationId: offer?.id ?? allocated.carModelLocationId,
+          ...request,
+          calculatedDays: pricing.days,
+          calculatedHours: pricing.hours,
+          totalPrice: pricing.totalPrice,
+          pricingDetails: { breakdown: pricing.breakdown },
+          hourlyRate: selected.hourlyRate,
+          dailyRate: selected.dailyRate,
+          currencyCode: selected.currencyCode,
+          timeZone: pickup.timeZone,
+          status: "PENDING",
+          source: newUserData ? "REGISTER_AND_BOOK" : "EXISTING_MEMBER",
+          driverName: input.driverName,
+          internationalDrivingPermit: input.internationalDrivingPermit,
+          carSnapshot: {
+            brand: specification.brand,
+            model: specification.model,
+            year: allocated.year,
+            licensePlate: allocated.licensePlate,
+            providerName: selected.providerName || "FUNCH Rental",
+            seats: specification.seats,
+            transmission: specification.transmission,
+            fuelType: specification.fuelType,
+            steeringSide: specification.steeringSide,
+            pickupLocationId: pickup.id,
+            pickupLocationName: pickup.name,
+            pickupTimeZone: pickup.timeZone,
+            dropoffLocationId: dropoff.id,
+            dropoffLocationName: dropoff.name,
+            dropoffTimeZone: dropoff.timeZone,
           },
         });
       },
-      { maxWait: 10_000, timeout: 20_000 },
+      { timeoutMs: 20_000 },
     );
     res.status(201).json({ success: true, data: booking });
   } catch (error) {
@@ -500,18 +354,15 @@ router.patch(
     try {
       const { expectedUpdatedAt, ...input } = z
         .object({
-          status: z.nativeEnum(BookingStatus),
+          status: z.enum(bookingStatuses),
           adminNote: z.string().trim().max(2000).optional(),
           expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
         })
         .strict()
         .parse(req.body);
-      const booking = await prisma.$transaction(async (tx) => {
+      const booking = await withTransaction(async (tx) => {
         await lockCarInventory(tx);
-        const old = await tx.booking.findUnique({
-          where: { id: req.params.id },
-          include: { car: true },
-        });
+        const old = await findBooking(tx, req.params.id);
         if (!old) return null;
         if (
           expectedUpdatedAt &&
@@ -519,10 +370,8 @@ router.patch(
         ) {
           throw new RentalError(409, "BOOKING_CHANGED");
         }
-        await tx.$queryRaw`SELECT id FROM cars WHERE id = ${old.carId} FOR UPDATE`;
-        const car = await tx.car.findUniqueOrThrow({
-          where: { id: old.carId },
-        });
+        await lockCar(tx, old.carId);
+        const car = required(await findCar(tx, old.carId));
         const allowed: Record<BookingStatus, BookingStatus[]> = {
           PENDING: ["APPROVED", "REJECTED", "CANCELLED"],
           APPROVED: ["CANCELLED", "COMPLETED"],
@@ -535,13 +384,7 @@ router.patch(
           !allowed[old.status].includes(input.status)
         )
           throw new Error("INVALID_TRANSITION");
-        const others = await tx.booking.findMany({
-          where: {
-            carId: old.carId,
-            id: { not: old.id },
-            status: { in: [...reservedStatuses] },
-          },
-        });
+        const others = await reservations(tx, old.carId, old.id);
         const blocking = reservedStatuses.includes(
           input.status as (typeof reservedStatuses)[number],
         );
@@ -571,19 +414,14 @@ router.patch(
             throw new Error("INVALID_TRANSITION");
           locationId = old.dropoffLocationId;
           availableFrom = new Date(Date.now() + old.turnaroundMinutes * 60_000);
-          await tx.carMovement.create({
-            data: {
-              carId: old.carId,
-              bookingId: old.id,
-              fromLocationId: car.locationId,
-              toLocationId: locationId,
-              reason: "RENTAL_RETURN",
-            },
-          });
-          await tx.car.update({
-            where: { id: old.carId },
-            data: { locationId, availableFrom },
-          });
+          await insertRows(tx, "car_movements", [{
+            carId: old.carId,
+            bookingId: old.id,
+            fromLocationId: car.locationId,
+            toLocationId: locationId,
+            reason: "RENTAL_RETURN",
+          }]);
+          await updateRows(tx, "cars", { locationId, availableFrom }, { id: old.carId });
         }
         if (
           !validItinerary(
@@ -593,14 +431,12 @@ router.patch(
           )
         )
           throw new Error("SCHEDULE_CONFLICT");
-        return tx.booking.update({
-          where: { id: old.id },
-          data: {
-            ...input,
-            approvedById: res.locals.session.user.id,
-            reviewedAt: new Date(),
-          },
-        });
+        await updateRows(tx, "bookings", {
+          ...input,
+          approvedById: res.locals.session.user.id,
+          reviewedAt: new Date(),
+        }, { id: old.id });
+        return required(await findBooking(tx, old.id));
       });
       if (!booking) {
         res.status(404).json({ success: false, message: "Booking not found" });

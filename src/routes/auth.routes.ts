@@ -2,13 +2,12 @@ import { ExpressAuth, type ExpressAuthConfig } from "@auth/express";
 import { Router } from "express";
 import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
-import prisma from "../lib/prisma.js";
 import {
-  publicUserSelect,
   registrationData,
   registrationSchema,
   passwordSchema,
 } from "../lib/registration.js";
+import { changePassword, createUser, publicUser, publicUserById, userPassword } from "../lib/users.js";
 import { loadSession, requireAuth, requireJson } from "../middleware/auth.js";
 import { hashPassword, verifyPassword } from "../utils/password.js";
 
@@ -57,11 +56,8 @@ export function createAuthRoutes(config: ExpressAuthConfig) {
       return;
     }
     try {
-      const user = await prisma.user.create({
-        data: await registrationData(parsed.data),
-        select: publicUserSelect,
-      });
-      res.status(201).json({ success: true, data: user });
+      const user = await createUser(await registrationData(parsed.data));
+      res.status(201).json({ success: true, data: publicUser(user) });
     } catch (error) {
       next(error);
     }
@@ -73,10 +69,7 @@ export function createAuthRoutes(config: ExpressAuthConfig) {
     requireAuth,
     async (_req, res, next) => {
       try {
-        const user = await prisma.user.findUnique({
-          where: { id: res.locals.session.user.id },
-          select: publicUserSelect,
-        });
+        const user = await publicUserById(res.locals.session.user.id);
         res.json({ success: true, data: user });
       } catch (error) {
         next(error);
@@ -102,9 +95,7 @@ export function createAuthRoutes(config: ExpressAuthConfig) {
         return;
       }
       try {
-        const user = await prisma.user.findUnique({
-          where: { id: res.locals.session.user.id },
-        });
+        const user = await userPassword(res.locals.session.user.id);
         if (
           !user?.isActive ||
           !(await verifyPassword(parsed.data.currentPassword, user.password))
@@ -115,19 +106,8 @@ export function createAuthRoutes(config: ExpressAuthConfig) {
           return;
         }
         // Compare-and-swap prevents concurrent requests from reusing the old password.
-        const changed = await prisma.user.updateMany({
-          where: {
-            id: user.id,
-            password: user.password,
-            sessionVersion: user.sessionVersion,
-            isActive: true,
-          },
-          data: {
-            password: await hashPassword(parsed.data.newPassword),
-            sessionVersion: { increment: 1 },
-          },
-        });
-        if (!changed.count) {
+        const changed = await changePassword(user, await hashPassword(parsed.data.newPassword));
+        if (!changed) {
           res
             .status(409)
             .json({

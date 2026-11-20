@@ -2,7 +2,7 @@ import "dotenv/config";
 import type { ExpressAuthConfig } from "@auth/express";
 import Credentials from "@auth/express/providers/credentials";
 import { z } from "zod";
-import prisma from "./lib/prisma.js";
+import { userByEmail, userSession } from "./lib/users.js";
 import { emailSchema } from "./lib/registration.js";
 import { hashPassword, verifyPassword } from "./utils/password.js";
 
@@ -38,9 +38,7 @@ export function createAuthConfig(): ExpressAuthConfig {
         async authorize(credentials) {
           const parsed = credentialsSchema.safeParse(credentials);
           if (!parsed.success) return null;
-          const user = await prisma.user.findUnique({
-            where: { email: parsed.data.email },
-          });
+          const user = await userByEmail(parsed.data.email);
           const valid = await verifyPassword(
             parsed.data.password,
             user?.password ?? (await dummyPassword),
@@ -66,16 +64,7 @@ export function createAuthConfig(): ExpressAuthConfig {
           token.sessionVersion = user.sessionVersion;
         }
         if (!token.sub) return null;
-        const current = await prisma.user.findUnique({
-          where: { id: token.sub },
-          select: {
-            isActive: true,
-            sessionVersion: true,
-            role: true,
-            name: true,
-            email: true,
-          },
-        });
+        const current = await userSession(token.sub);
         if (
           !current?.isActive ||
           current.sessionVersion !== token.sessionVersion

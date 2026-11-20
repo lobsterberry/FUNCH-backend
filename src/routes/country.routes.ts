@@ -1,5 +1,5 @@
-import { Router, Request, Response } from "express";
-import prisma from "../lib/prisma.js";
+import { Router } from "express";
+import { readCountries } from "../lib/locations.js";
 
 const router = Router();
 
@@ -21,23 +21,7 @@ const PRIMARY_AIRPORT_ORDER: Record<string, number> = {
   SIN: 1,
 };
 
-function formatCountry(c: {
-  code: string;
-  name: string;
-  nameTh: string;
-  flag: string;
-  currencyCode: string;
-  drivingSide: string;
-  locations: Array<{
-    id: string;
-    name: string;
-    nameTh: string;
-    city: string;
-    cityTh: string;
-    airportCode: string | null;
-    timeZone: string;
-  }>;
-}) {
+function formatCountry(c: Awaited<ReturnType<typeof readCountries>>[number]) {
   const sortedLocations = [...c.locations].sort((a, b) => {
     const prioA =
       (a.airportCode ? PRIMARY_AIRPORT_ORDER[a.airportCode] : undefined) ?? 99;
@@ -76,15 +60,9 @@ function formatCountry(c: {
 }
 
 // GET /api/countries - รายการประเทศทั้งหมด พร้อมข้อมูลจุดรับรถและเมือง
-router.get("/", async (_req: Request, res: Response) => {
+router.get("/", async (_req, res, next) => {
   try {
-    const countries = await prisma.country.findMany({
-      include: {
-        locations: {
-          orderBy: { name: "asc" },
-        },
-      },
-    });
+    const countries = await readCountries();
 
     const sorted = [...countries].sort((a, b) => {
       const orderA = COUNTRY_ORDER[a.code] ?? 999;
@@ -100,23 +78,16 @@ router.get("/", async (_req: Request, res: Response) => {
       count: data.length,
       data,
     });
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
+  } catch (error) {
+    next(error);
   }
 });
 
 // GET /api/countries/:code - ข้อมูลประเทศตามรหัส เช่น JP, TH
-router.get("/:code", async (req: Request, res: Response) => {
+router.get("/:code", async (req, res, next) => {
   try {
     const { code } = req.params;
-    const country = await prisma.country.findUnique({
-      where: { code: String(code).toUpperCase() },
-      include: {
-        locations: {
-          orderBy: { name: "asc" },
-        },
-      },
-    });
+    const [country] = await readCountries(code.toUpperCase());
 
     if (!country) {
       return res
@@ -128,8 +99,8 @@ router.get("/:code", async (req: Request, res: Response) => {
       success: true,
       data: formatCountry(country),
     });
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
+  } catch (error) {
+    next(error);
   }
 });
 

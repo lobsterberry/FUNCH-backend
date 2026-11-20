@@ -1,19 +1,15 @@
 # Authentication API
 
-ใช้ Auth.js (`@auth/express`) แบบ Credentials กับ Prisma User เดิม และ JWT session ใน HttpOnly cookie อายุ 24 ชั่วโมง รองรับ scrypt hash ของบัญชี seed เดิม โดยไม่ต้องใช้ Prisma adapter หรือสร้างตาราง OAuth
+ใช้ Auth.js (`@auth/express`) แบบ Credentials กับตาราง `users` ผ่าน `pg` และ JWT session ใน HttpOnly cookie อายุ 24 ชั่วโมง รองรับ scrypt hash ของบัญชี seed เดิม
 
 ## เริ่มใช้งาน
 
 1. ติดตั้งด้วย `npm install` และคัดลอก `.env.example` เป็น `.env` หากยังไม่มีไฟล์
 2. ตั้ง `AUTH_SECRET` เป็นค่าสุ่มอย่างน้อย 32 ตัวอักษร สร้างได้ด้วย `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` อย่า commit secret
 3. ตั้ง `AUTH_URL=http://localhost:5000` และ `FRONTEND_URL=http://localhost:3000` ให้ตรงกับ origin ที่ใช้จริง
-4. ตั้ง `DATABASE_URL` ให้ตรงกับ PostgreSQL และรัน `npm run prisma:deploy` ตามด้วย `npm run dev` หรือ `npm run build` และ `npm start`
+4. ตั้ง `DATABASE_URL` ให้ตรงกับ PostgreSQL เตรียม schema ตาม [คู่มือ backend](README.md) แล้วรัน `npm run dev` หรือ `npm run build` ตามด้วย `npm start`
 
-ติดตั้งใน workspace นี้ได้สร้าง secret ใน `.env` และใช้ migration เพิ่ม `users.sessionVersion` แล้ว ฐานข้อมูลอื่นต้อง deploy migration ด้วย หาก schema เดิมมาจาก `prisma db push` ให้ทำตาม [คู่มือ Prisma](prisma/README.md) ก่อนใช้ migrations; ห้าม reset ฐานข้อมูลที่ต้องเก็บไว้
-
-สำหรับ Node.js บนเครื่องกับ PostgreSQL ใน Docker ให้ใช้ host `localhost` ใน `DATABASE_URL`; สำหรับ backend ใน Docker ให้ใช้ `postgres` โดย Docker Compose ส่งค่า Auth ให้ backend แล้ว และยัง sync schema ด้วย `prisma db push` ตามโฟลว์ development เดิม
-
-Production ต้องใช้ HTTPS และตั้ง `AUTH_URL` ให้เป็น public origin เพื่อเปิด Secure cookie กำหนด frontend/backend บน site เดียวกัน เช่น `app.example.com` / `api.example.com` เพื่อใช้ SameSite=Lax cookie
+ตาราง `users` ต้องมี `sessionVersion` หากใช้ฐานข้อมูลจาก schema เก่า ให้ตรวจประวัติ migration ก่อนอัปเกรด สำหรับ Node.js บนเครื่องกับ PostgreSQL ใน Docker ให้ใช้ host `localhost` ส่วน backend ใน Docker ใช้ `postgres` ใน `DOCKER_DATABASE_URL`
 
 ## Endpoints
 
@@ -150,7 +146,7 @@ Cookie: <session cookie จาก login>
 ```powershell
 npm run build
 npm test
-npm run prisma:seed:check
+npm run seed:check
 
 # Integration tests ใช้ PostgreSQL ที่ migrate + seed แล้ว
 # สร้างบัญชีและรายการจองเฉพาะการทดสอบ จากนั้นลบข้อมูลทดสอบเหล่านั้น

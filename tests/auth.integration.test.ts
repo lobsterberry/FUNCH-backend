@@ -1,3 +1,5 @@
+import { execute, fixtureUser, row, rows } from './fixtures.js';
+import { closeDatabasePool } from '../src/lib/db.js';
 import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +12,6 @@ test('Auth.js HTTP flow with PostgreSQL', { skip: !process.env.AUTH_TEST_DATABAS
   process.env.AUTH_SECRET = 'integration-test-secret-only-1234567890';
   process.env.NODE_ENV = 'test';
   const { createApp } = await import('../src/app.js');
-  const { default: prisma } = await import('../src/lib/prisma.js');
   const { hashPassword, verifyPassword } = await import('../src/utils/password.js');
   const runId = randomUUID();
   const email = `auth-${runId}@funch.example`;
@@ -69,7 +70,7 @@ test('Auth.js HTTP flow with PostgreSQL', { skip: !process.env.AUTH_TEST_DATABAS
       assert.equal(result.data.data.role, 'USER');
       assert.equal('password' in result.data.data, false);
       memberId = result.data.data.id;
-      const stored = await prisma.user.findUniqueOrThrow({ where: { id: memberId } });
+      const stored = await row('SELECT * FROM users WHERE "id" = $1', [memberId]);
       assert.notEqual(stored.password, password);
       assert.equal(await verifyPassword(password, stored.password), true);
       assert.equal((await member.request('/api/auth/register', 'POST', { email, name: 'Test', password })).response.status, 409);
@@ -111,13 +112,13 @@ test('Auth.js HTTP flow with PostgreSQL', { skip: !process.env.AUTH_TEST_DATABAS
       assert.equal((await anonymous.request('/api/bookings', 'POST', input)).response.status, 401);
     });
     await t.test('admin privileges, role changes and inactive accounts are read from the database', async () => {
-      await prisma.user.create({ data: { email: adminEmail, name: 'Test Admin', password: await hashPassword(password), role: 'ADMIN' } });
+      await fixtureUser({ email: adminEmail, name: 'Test Admin', password: await hashPassword(password), role: 'ADMIN' });
       const admin = clients();
       await admin.login(adminEmail, password);
       assert.equal((await admin.request('/api/bookings')).response.status, 200);
-      await prisma.user.update({ where: { email: adminEmail }, data: { role: 'USER' } });
+      await execute(`UPDATE users SET "role" = $2, "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC' WHERE "email" = $1`, [adminEmail, 'USER']);
       assert.equal((await admin.request('/api/bookings')).response.status, 403);
-      await prisma.user.update({ where: { email: adminEmail }, data: { isActive: false } });
+      await execute(`UPDATE users SET "isActive" = $2, "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC' WHERE "email" = $1`, [adminEmail, false]);
       assert.equal((await admin.request('/api/auth/me')).response.status, 401);
       assert.match((await clients().login(adminEmail, password)).data.url, /CredentialsSignin/);
     });
@@ -141,7 +142,7 @@ test('Auth.js HTTP flow with PostgreSQL', { skip: !process.env.AUTH_TEST_DATABAS
       assert.equal((await member.request('/api/auth/me')).response.status, 401);
     });
     await t.test('register-and-book hashes the guest password and assigns the booking owner', async () => {
-      const car = await prisma.car.findFirstOrThrow({ where: { isAvailable: true, locationId: { not: null }, id: { startsWith: 'seed-' }, bookings: { none: {} } } });
+      const car = await row('SELECT * FROM cars WHERE "isAvailable" = $1 AND "locationId" IS NOT NULL AND starts_with("id", $2) AND NOT EXISTS (SELECT 1 FROM bookings WHERE "carId" = cars.id) LIMIT 1', [true, 'seed-']);
       const result = await anonymous.request('/api/bookings', 'POST', {
         carId: car.id, startDateTime: '2026-12-01T10:00:00Z', endDateTime: '2026-12-01T12:00:00Z',
         registerUser: { email: guestEmail, name: 'Test Guest', password },
@@ -149,7 +150,7 @@ test('Auth.js HTTP flow with PostgreSQL', { skip: !process.env.AUTH_TEST_DATABAS
       assert.equal(result.response.status, 201);
       assert.equal(result.data.data.user.email, guestEmail);
       assert.equal(result.data.data.source, 'REGISTER_AND_BOOK');
-      const guest = await prisma.user.findUniqueOrThrow({ where: { email: guestEmail } });
+      const guest = await row('SELECT * FROM users WHERE "email" = $1', [guestEmail]);
       assert.equal(await verifyPassword(password, guest.password), true);
       assert.doesNotMatch((await anonymous.login(guestEmail, password)).data.url, /error=/);
       const booked = await anonymous.request('/api/bookings', 'POST', {
@@ -180,12 +181,12 @@ test('Auth.js HTTP flow with PostgreSQL', { skip: !process.env.AUTH_TEST_DATABAS
     });
   } finally {
     // Delete only accounts unique to this test run and their bookings.
-    const testUsers = await prisma.user.findMany({ where: { email: { in: [email, adminEmail, guestEmail] } }, select: { id: true } });
+    const testUsers = await rows('SELECT "id" FROM users WHERE "email" = ANY($1::text[])', [[email, adminEmail, guestEmail]]);
     const ids = testUsers.map((user) => user.id);
-    await prisma.booking.deleteMany({ where: { userId: { in: ids } } });
-    await prisma.user.deleteMany({ where: { id: { in: ids } } });
+    await execute('DELETE FROM bookings WHERE "userId" = ANY($1::text[])', [ids]);
+    await execute('DELETE FROM users WHERE "id" = ANY($1::text[])', [ids]);
     server.close();
     await once(server, 'close');
-    await prisma.$disconnect();
+    await closeDatabasePool();
   }
 });

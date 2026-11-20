@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
+import { closeDatabasePool } from '../src/lib/db.js';
 
-test('GET /api/countries returns countries and locations from database', async () => {
+test('GET /api/countries returns countries and locations from database', { skip: !process.env.AUTH_TEST_DATABASE_URL }, async () => {
+  process.env.DATABASE_URL = process.env.AUTH_TEST_DATABASE_URL;
   const { createApp } = await import('../src/app.js');
   const server = createApp().listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -18,16 +20,16 @@ test('GET /api/countries returns countries and locations from database', async (
     assert.ok(Array.isArray(body.data));
     assert.ok(body.data.length >= 6);
 
-    // Verify Japan is first (or has correct structure)
-    const jp = body.data.find((c: any) => c.code === 'JP');
-    assert.ok(jp);
+    assert.equal(body.count, body.data.length);
+    const [jp] = body.data;
+    assert.equal(jp.code, 'JP');
     assert.equal(jp.name, 'ญี่ปุ่น');
     assert.equal(jp.steering, 'right');
     assert.ok(jp.cities.includes('โตเกียว'));
-    assert.ok(jp.locations.length > 0);
+    assert.equal(jp.locations[0].airportCode, 'HND');
 
     // Test GET /api/countries/:code
-    const singleRes = await fetch(`${base}/api/countries/TH`);
+    const singleRes = await fetch(`${base}/api/countries/th`);
     assert.equal(singleRes.status, 200);
     const singleBody = await singleRes.json();
     assert.equal(singleBody.success, true);
@@ -38,7 +40,11 @@ test('GET /api/countries returns countries and locations from database', async (
     // Test 404 for unknown country
     const notFoundRes = await fetch(`${base}/api/countries/XX`);
     assert.equal(notFoundRes.status, 404);
+    const longCodeRes = await fetch(`${base}/api/countries/THX`);
+    assert.equal(longCodeRes.status, 404);
   } finally {
     server.close();
+    await once(server, 'close');
+    await closeDatabasePool();
   }
 });

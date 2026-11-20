@@ -1,3 +1,5 @@
+import { execute, fixtureBooking, fixtureCar, fixtureUser, row } from './fixtures.js';
+import { closeDatabasePool } from '../src/lib/db.js';
 import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +12,6 @@ test('admin booking approval lists real data and prevents stale reviews', { skip
   process.env.AUTH_SECRET = 'booking-approval-test-secret-1234567890';
   process.env.NODE_ENV = 'test';
   const { createApp } = await import('../src/app.js');
-  const { default: prisma } = await import('../src/lib/prisma.js');
   const { hashPassword } = await import('../src/utils/password.js');
   const tag = `approval-${randomUUID()}`;
   const password = 'ApprovalTestPassword123!';
@@ -42,18 +43,18 @@ test('admin booking approval lists real data and prevents stale reviews', { skip
   let carId = '';
   try {
     const hash = await hashPassword(password);
-    const actor = await prisma.user.create({ data: { email: `${tag}-admin@funch.example`, name: `${tag} Admin`, password: hash, role: 'ADMIN' } });
-    const user = await prisma.user.create({ data: { email: `${tag}-user@funch.example`, name: `${tag} Customer`, phoneNumber: '+66 89 123 4567', password: hash } });
+    const actor = await fixtureUser({ email: `${tag}-admin@funch.example`, name: `${tag} Admin`, password: hash, role: 'ADMIN' });
+    const user = await fixtureUser({ email: `${tag}-user@funch.example`, name: `${tag} Customer`, phoneNumber: '+66 89 123 4567', password: hash });
     await admin.login(actor.email); await member.login(user.email);
-    const location = await prisma.location.findFirstOrThrow({ where: { timeZone: 'Asia/Tokyo' } });
-    const car = await prisma.car.create({ data: { brand: 'Approval', model: 'Test vehicle', year: 2026,
-      licensePlate: tag, country: location.countryCode, locationId: location.id, hourlyRate: 100, dailyRate: 1000 } });
+    const location = await row('SELECT * FROM locations WHERE "timeZone" = $1 ORDER BY id LIMIT 1', ['Asia/Tokyo']);
+    const car = await fixtureCar({ brand: 'Approval', model: 'Test vehicle', year: 2026,
+      licensePlate: tag, country: location.countryCode, locationId: location.id, hourlyRate: 100, dailyRate: 1000 });
     carId = car.id;
     const statuses = ['PENDING', 'APPROVED', 'COMPLETED', 'REJECTED', 'CANCELLED'] as const;
-    const bookings = [];
+    const bookings: Awaited<ReturnType<typeof fixtureBooking>>[] = [];
     for (const [index, status] of statuses.entries()) {
       const start = new Date(Date.now() + (90 + index * 2) * 86_400_000);
-      bookings.push(await prisma.booking.create({ data: {
+      bookings.push(await fixtureBooking({
         bookingNumber: `${tag}-${status}`, userId: user.id, carId: car.id, status,
         createdAt: new Date(Date.now() - (statuses.length - index) * 60_000),
         startDateTime: start, endDateTime: new Date(start.getTime() + 3_600_000),
@@ -62,7 +63,7 @@ test('admin booking approval lists real data and prevents stale reviews', { skip
         driverName: 'Approval Driver', internationalDrivingPermit: 'APPROVAL-IDP-123',
         carSnapshot: { brand: 'Historical Brand', model: 'Historical Model', licensePlate: 'HISTORY-001',
           pickupLocationName: 'Historical pickup', pickupTimeZone: 'Asia/Tokyo' },
-      } }));
+      }));
     }
     const prefix = '/api/bookings';
     const filtered = `${prefix}?search=${tag}&page=1`;
@@ -117,7 +118,7 @@ test('admin booking approval lists real data and prevents stale reviews', { skip
       })));
       assert.deepEqual(reviews.map((result) => result.status).sort(), [200, 409]);
       assert.equal(reviews.find((result) => result.status === 409)!.body.message, 'BOOKING_CHANGED');
-      const saved = await prisma.booking.findUniqueOrThrow({ where: { id: booking.id } });
+      const saved = await row('SELECT * FROM bookings WHERE "id" = $1', [booking.id]);
       assert.equal(saved.approvedById, actor.id);
       assert.ok(saved.reviewedAt);
       assert.equal(saved.adminNote, `Review ${saved.status}`);
@@ -135,11 +136,11 @@ test('admin booking approval lists real data and prevents stale reviews', { skip
       assert.equal((await anonymous.request(path)).status, 401);
       assert.deepEqual((await admin.request(path)).body.data, []);
 
-      const legacy = await prisma.booking.create({ data: {
+      const legacy = await fixtureBooking({
         userId: actor.id, carId: car.id, status: 'COMPLETED',
         startDateTime: new Date('2025-01-01T01:00:00Z'),
         endDateTime: new Date('2025-01-01T03:00:00Z'), totalPrice: 200,
-      } });
+      });
       const history = await member.request(`${path}?userId=${actor.id}`);
       assert.equal(history.status, 200);
       assert.match(history.headers.get('cache-control')!, /no-store/);
@@ -160,11 +161,11 @@ test('admin booking approval lists real data and prevents stale reviews', { skip
     });
   } finally {
     if (carId) {
-      await prisma.booking.deleteMany({ where: { carId } });
-      await prisma.car.delete({ where: { id: carId } });
+      await execute('DELETE FROM bookings WHERE "carId" = $1', [carId]);
+      await execute('DELETE FROM cars WHERE "id" = $1', [carId]);
     }
-    await prisma.user.deleteMany({ where: { email: { startsWith: tag } } });
+    await execute('DELETE FROM users WHERE starts_with("email", $1)', [tag]);
     server.close(); await once(server, 'close');
-    await prisma.$disconnect();
+    await closeDatabasePool();
   }
 });

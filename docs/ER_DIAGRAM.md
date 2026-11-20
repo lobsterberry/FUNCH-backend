@@ -1,6 +1,6 @@
 # Entity-Relationship (ER) Diagram - FUNCH Car Rental System
 
-เอกสารแสดงโครงสร้างฐานข้อมูลและแผนภาพแสดงความสัมพันธ์ของข้อมูล (Entity-Relationship Diagram) สำหรับระบบบริการเช่ารถยนต์ **FUNCH** โดยอ้างอิงจากข้อกำหนดใน `Assignment.md`, โครงสร้าง `schema.prisma`, และโครงสร้างรุ่นรถและข้อเสนอรายสาขา ใน `backend/docs/cars.md`
+เอกสารแสดงโครงสร้างฐานข้อมูลและแผนภาพแสดงความสัมพันธ์ของข้อมูล (Entity-Relationship Diagram) สำหรับระบบบริการเช่ารถยนต์ **FUNCH** โดยอ้างอิงจากข้อกำหนดใน `Assignment.md`, [SQL migrations](../db/migrations/), และโครงสร้างรุ่นรถและข้อเสนอรายสาขา ใน `backend/docs/cars.md`
 
 ---
 

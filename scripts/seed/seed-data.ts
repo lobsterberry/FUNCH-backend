@@ -1,16 +1,21 @@
 import { createHash } from 'node:crypto';
-import { BookingSource, BookingStatus, CarCategory, DrivingSide, Prisma, SteeringSide, TransmissionType } from '@prisma/client';
+import type { BookingSource, BookingStatus } from '../../src/lib/db-types.js';
+import type { Country, Location } from '../../src/lib/inventory-queries.js';
+import type { Member } from '../../src/lib/users.js';
+
+type CarCategory = 'SUV' | 'SEDAN' | 'MPV' | 'EV' | 'ECO' | 'LUXURY' | 'WAGON';
+type TransmissionType = 'AUTOMATIC' | 'MANUAL';
 
 // All prices are THB, matching the wireframes. Local currency is metadata only;
 // this dataset intentionally does not invent exchange rates.
 export const countries = [
-  { code: 'JP', name: 'Japan', nameTh: 'ญี่ปุ่น', flag: '🇯🇵', currencyCode: 'JPY', drivingSide: DrivingSide.LEFT },
-  { code: 'TH', name: 'Thailand', nameTh: 'ไทย', flag: '🇹🇭', currencyCode: 'THB', drivingSide: DrivingSide.LEFT },
-  { code: 'DE', name: 'Germany', nameTh: 'เยอรมนี', flag: '🇩🇪', currencyCode: 'EUR', drivingSide: DrivingSide.RIGHT },
-  { code: 'GB', name: 'United Kingdom', nameTh: 'สหราชอาณาจักร', flag: '🇬🇧', currencyCode: 'GBP', drivingSide: DrivingSide.LEFT },
-  { code: 'US', name: 'United States', nameTh: 'สหรัฐอเมริกา', flag: '🇺🇸', currencyCode: 'USD', drivingSide: DrivingSide.RIGHT },
-  { code: 'SG', name: 'Singapore', nameTh: 'สิงคโปร์', flag: '🇸🇬', currencyCode: 'SGD', drivingSide: DrivingSide.LEFT },
-] satisfies Prisma.CountryCreateManyInput[];
+  { code: 'JP', name: 'Japan', nameTh: 'ญี่ปุ่น', flag: '🇯🇵', currencyCode: 'JPY', drivingSide: 'LEFT' },
+  { code: 'TH', name: 'Thailand', nameTh: 'ไทย', flag: '🇹🇭', currencyCode: 'THB', drivingSide: 'LEFT' },
+  { code: 'DE', name: 'Germany', nameTh: 'เยอรมนี', flag: '🇩🇪', currencyCode: 'EUR', drivingSide: 'RIGHT' },
+  { code: 'GB', name: 'United Kingdom', nameTh: 'สหราชอาณาจักร', flag: '🇬🇧', currencyCode: 'GBP', drivingSide: 'LEFT' },
+  { code: 'US', name: 'United States', nameTh: 'สหรัฐอเมริกา', flag: '🇺🇸', currencyCode: 'USD', drivingSide: 'RIGHT' },
+  { code: 'SG', name: 'Singapore', nameTh: 'สิงคโปร์', flag: '🇸🇬', currencyCode: 'SGD', drivingSide: 'LEFT' },
+] satisfies Country[];
 
 export const locations = [
   { id: 'seed-location-haneda', name: 'Haneda Airport', nameTh: 'สนามบินฮาเนดะ', city: 'Tokyo', cityTh: 'โตเกียว', countryCode: 'JP', timeZone: 'Asia/Tokyo', airportCode: 'HND' },
@@ -26,7 +31,7 @@ export const locations = [
   { id: 'seed-location-heathrow', name: 'Heathrow Airport', nameTh: 'สนามบินฮีทโธรว์', city: 'London', cityTh: 'ลอนดอน', countryCode: 'GB', timeZone: 'Europe/London', airportCode: 'LHR' },
   { id: 'seed-location-los-angeles', name: 'Los Angeles International Airport', nameTh: 'สนามบินลอสแอนเจลิส', city: 'Los Angeles', cityTh: 'ลอสแอนเจลิส', countryCode: 'US', timeZone: 'America/Los_Angeles', airportCode: 'LAX' },
   { id: 'seed-location-changi', name: 'Changi Airport', nameTh: 'สนามบินชางงี', city: 'Singapore', cityTh: 'สิงคโปร์', countryCode: 'SG', timeZone: 'Asia/Singapore', airportCode: 'SIN' },
-] satisfies Prisma.LocationCreateManyInput[];
+] satisfies Location[];
 
 export const featureLabels = {
   GPS_EN: 'ระบบนำทาง GPS รองรับภาษาอังกฤษ',
@@ -89,10 +94,10 @@ function car(spec: CarSpec, index: number) {
     country: country.code, locationId: location.id,
     hourlyRate: spec.hourlyRate, dailyRate: spec.dailyRate, currencyCode: 'THB',
     categories: spec.categories, categoryLabel: spec.categoryLabel ?? spec.categories[0],
-    steeringSide: country.drivingSide === DrivingSide.LEFT ? SteeringSide.RHD : SteeringSide.LHD,
+    steeringSide: country.drivingSide === 'LEFT' ? 'RHD' : 'LHD',
     seats: spec.seats ?? 5, luggageCapacity: spec.luggageCapacity ?? 3,
     fuelType: spec.fuelType ?? 'Hybrid', transmission: spec.transmission ?? 'E-CVT',
-    transmissionType: spec.transmissionType ?? TransmissionType.AUTOMATIC,
+    transmissionType: spec.transmissionType ?? 'AUTOMATIC',
     description: spec.description ?? `${spec.brand} ${spec.model} สำหรับการเดินทางใน${location.cityTh}`,
     providerName: spec.providerName ?? `FUNCH ${location.city} Demo Rental`,
     featureCodes: features, options: features.map((code) => ({ code, label: featureLabels[code], included: true })),
@@ -101,7 +106,7 @@ function car(spec: CarSpec, index: number) {
     recommendationOrder: spec.featuredOrder ?? spec.recommendationOrder ?? 100 + index,
     isAvailable: spec.isAvailable ?? true,
     createdAt: new Date('2026-10-01T00:00:00Z'),
-  } satisfies Prisma.CarUncheckedCreateInput;
+  };
 }
 
 // The first four rows reproduce search.html. The six featured rows reproduce index.html.
@@ -122,7 +127,7 @@ const carSpecs: CarSpec[] = [
   { id: 'tokyo-alphard', brand: 'Toyota', model: 'Alphard Executive Lounge', location: 'haneda', hourlyRate: 650, dailyRate: 5200, categories: ['MPV', 'LUXURY'], seats: 7, luggageCapacity: 5, features: ['GPS_EN', 'CAMERA_360', 'POWER_SLIDING_DOORS', 'ZERO_EXCESS_INSURANCE'] },
   { id: 'tokyo-fit', brand: 'Honda', model: 'Fit e:HEV', location: 'haneda', hourlyRate: 130, dailyRate: 1000, categories: ['ECO'], luggageCapacity: 2 },
   { id: 'tokyo-note', brand: 'Nissan', model: 'Note e-POWER', location: 'haneda', hourlyRate: 140, dailyRate: 1100, categories: ['ECO'], luggageCapacity: 2 },
-  { id: 'tokyo-swift', brand: 'Suzuki', model: 'Swift Sport', location: 'haneda', hourlyRate: 150, dailyRate: 1200, categories: ['ECO'], fuelType: 'Gasoline', transmission: 'Manual 6-Speed', transmissionType: TransmissionType.MANUAL, luggageCapacity: 2 },
+  { id: 'tokyo-swift', brand: 'Suzuki', model: 'Swift Sport', location: 'haneda', hourlyRate: 150, dailyRate: 1200, categories: ['ECO'], fuelType: 'Gasoline', transmission: 'Manual 6-Speed', transmissionType: 'MANUAL', luggageCapacity: 2 },
   { id: 'tokyo-leaf', brand: 'Nissan', model: 'Leaf e+', location: 'haneda', hourlyRate: 230, dailyRate: 1800, categories: ['EV', 'ECO'], fuelType: 'EV', transmission: 'Automatic Single-Speed' },
   { id: 'bangkok-city', brand: 'Honda', model: 'City e:HEV RS', location: 'bangkok', hourlyRate: 150, dailyRate: 1200, categories: ['SEDAN', 'ECO'], categoryLabel: 'Eco Sedan', rating: 4.8, reviewCount: 98, featuredOrder: 2, badge: 'ยอดนิยมในไทย', luggageCapacity: 2, description: 'คล่องตัว ขับง่ายในเมือง พร้อม Honda SENSING ครบครัน', features: ['HONDA_SENSING', 'EFFICIENT_278', 'GPS_EN', 'BASIC_INSURANCE'] },
   { id: 'frankfurt-modely', brand: 'Tesla', model: 'Model Y Long Range', location: 'frankfurt', hourlyRate: 420, dailyRate: 3400, categories: ['SUV', 'EV'], categoryLabel: 'EV 100%', fuelType: 'EV', transmission: 'Automatic AWD', rating: 4.95, reviewCount: 210, featuredOrder: 3, badge: 'ชาร์จฟรี Supercharger', luggageCapacity: 4, description: 'ระยะทาง 533 กม./ชาร์จ ขับบน Autobahn สบายด้วย Autopilot', features: ['AUTOPILOT', 'FREE_SUPERCHARGING', 'VIGNETTE', 'EUROPE_NAV', 'BASIC_INSURANCE'] },
@@ -133,7 +138,7 @@ const carSpecs: CarSpec[] = [
   { id: 'hokkaido-rav4', brand: 'Toyota', model: 'RAV4 Adventure AWD', location: 'chitose', hourlyRate: 280, dailyRate: 2200, categories: ['SUV'], fuelType: 'Gasoline', transmission: 'Automatic AWD' },
   { id: 'la-model3', brand: 'Tesla', model: 'Model 3 Long Range', location: 'los-angeles', hourlyRate: 400, dailyRate: 3200, categories: ['SEDAN', 'EV'], fuelType: 'EV', transmission: 'Automatic AWD', features: ['AUTOPILOT', 'GPS_EN', 'BASIC_INSURANCE'] },
   { id: 'singapore-sienta', brand: 'Toyota', model: 'Sienta Hybrid', location: 'changi', hourlyRate: 260, dailyRate: 2100, categories: ['MPV'], seats: 7, features: ['GPS_EN', 'CHILD_SEAT', 'POWER_SLIDING_DOORS', 'BASIC_INSURANCE'] },
-  { id: 'bangkok-maintenance', brand: 'Toyota', model: 'Commuter', location: 'bangkok', hourlyRate: 350, dailyRate: 2800, categories: ['MPV'], seats: 12, luggageCapacity: 6, fuelType: 'Diesel', transmission: 'Manual 5-Speed', transmissionType: TransmissionType.MANUAL, isAvailable: false, badge: 'อยู่ระหว่างบำรุงรักษา' },
+  { id: 'bangkok-maintenance', brand: 'Toyota', model: 'Commuter', location: 'bangkok', hourlyRate: 350, dailyRate: 2800, categories: ['MPV'], seats: 12, luggageCapacity: 6, fuelType: 'Diesel', transmission: 'Manual 5-Speed', transmissionType: 'MANUAL', isAvailable: false, badge: 'อยู่ระหว่างบำรุงรักษา' },
 ];
 
 export const cars = carSpecs.map(car);
@@ -144,7 +149,7 @@ export const users = [
   { id: 'seed-user-emily', email: 'emily@funch.example', name: 'Emily Carter', firstName: 'Emily', lastName: 'Carter', phoneNumber: '+440000000003', role: 'USER', isActive: true },
   { id: 'seed-user-new-member', email: 'new.member@funch.example', name: 'Narin Suksan', firstName: 'Narin', lastName: 'Suksan', phoneNumber: '+66000000004', role: 'USER', isActive: true },
   { id: 'seed-user-inactive', email: 'inactive@funch.example', name: 'Inactive Demo Member', firstName: 'Inactive', lastName: 'Member', phoneNumber: null, role: 'USER', isActive: false },
-] satisfies Omit<Prisma.UserCreateManyInput, 'password'>[];
+] satisfies Omit<Member, 'createdAt' | 'updatedAt'>[];
 
 // Explicit expected allocations are fixtures from the assignment, not calculated
 // by the current API's server-local pricing helper. Dates include destination offsets.
@@ -178,7 +183,7 @@ const bookingSpecs: BookingSpec[] = [
   { number: 'FUNCH-DEMO-011', car: 'tokyo-corolla-cross', user: 'somchai', start: '2026-12-02T10:00:00+09:00', end: '2026-12-02T12:00:00+09:00', days: 0, hours: 2, status: 'PENDING', reason: 'ตัวอย่างรับและคืนต่างสถานที่ในเมืองเดียวกัน', dropoff: 'tokyo-station' },
 ];
 
-export const bookings: Prisma.BookingUncheckedCreateInput[] = bookingSpecs.map((spec) => {
+export const bookings = bookingSpecs.map((spec) => {
   const vehicle = cars.find((item) => item.id === `seed-car-${spec.car}`)!;
   const location = locations.find((item) => item.id === vehicle.locationId)!;
   const reviewed = ['APPROVED', 'REJECTED', 'COMPLETED'].includes(spec.status);
@@ -189,14 +194,14 @@ export const bookings: Prisma.BookingUncheckedCreateInput[] = bookingSpecs.map((
   const createdAt = new Date(Math.min(startDateTime.getTime() - 86400000 * 7, Date.parse('2026-11-16T03:00:00Z')));
   return {
     id: `seed-booking-${spec.number}`, bookingNumber: spec.number,
-    userId: `seed-user-${spec.user}`, carId: vehicle.id!,
+    userId: `seed-user-${spec.user}`, carId: vehicle.id,
     startDateTime, endDateTime: new Date(spec.end),
     calculatedDays: spec.days, calculatedHours: spec.hours, totalPrice,
     hourlyRate, dailyRate, currencyCode: 'THB', timeZone: location.timeZone,
     pickupLocationId: location.id, dropoffLocationId: spec.dropoff ? `seed-location-${spec.dropoff}` : location.id,
     driverName: users.find((item) => item.id === `seed-user-${spec.user}`)!.name,
     internationalDrivingPermit: spec.user === 'somchai' ? 'IDP-TH-2026-9842' : 'IDP-DEMO-2026-0001',
-    source: spec.source ?? BookingSource.EXISTING_MEMBER,
+    source: spec.source ?? 'EXISTING_MEMBER',
     pricingDetails: {
       reason: spec.reason, timeZone: location.timeZone, currencyCode: 'THB',
       startLocal: spec.start, endLocal: spec.end, hourlyRate, dailyRate,
