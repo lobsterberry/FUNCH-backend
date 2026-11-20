@@ -55,6 +55,7 @@ test('admin booking approval lists real data and prevents stale reviews', { skip
       const start = new Date(Date.now() + (90 + index * 2) * 86_400_000);
       bookings.push(await prisma.booking.create({ data: {
         bookingNumber: `${tag}-${status}`, userId: user.id, carId: car.id, status,
+        createdAt: new Date(Date.now() - (statuses.length - index) * 60_000),
         startDateTime: start, endDateTime: new Date(start.getTime() + 3_600_000),
         pickupLocationId: location.id, dropoffLocationId: location.id, timeZone: location.timeZone,
         totalPrice: (index + 1) * 100, calculatedHours: index + 1, hourlyRate: 100, dailyRate: 1000,
@@ -128,6 +129,34 @@ test('admin booking approval lists real data and prevents stale reviews', { skip
     });
     await t.test('completed bookings cannot be approved again', async () => {
       assert.equal((await admin.request(`${prefix}/${bookings[2].id}/status`, 'PATCH', { status: 'APPROVED' })).status, 409);
+    });
+    await t.test('personal history returns only the signed-in account’s bookings', async () => {
+      const path = `${prefix}/mine`;
+      assert.equal((await anonymous.request(path)).status, 401);
+      assert.deepEqual((await admin.request(path)).body.data, []);
+
+      const legacy = await prisma.booking.create({ data: {
+        userId: actor.id, carId: car.id, status: 'COMPLETED',
+        startDateTime: new Date('2025-01-01T01:00:00Z'),
+        endDateTime: new Date('2025-01-01T03:00:00Z'), totalPrice: 200,
+      } });
+      const history = await member.request(`${path}?userId=${actor.id}`);
+      assert.equal(history.status, 200);
+      assert.match(history.headers.get('cache-control')!, /no-store/);
+      assert.deepEqual(
+        history.body.data.map(({ id }: { id: string }) => id),
+        bookings.map(({ id }) => id).reverse(),
+      );
+      assert.equal(history.body.data[0].carSnapshot.model, 'Historical Model');
+      assert.equal(history.body.data[0].pickupLocation.timeZone, 'Asia/Tokyo');
+      for (const field of ['userId', 'adminNote', 'approvedById', 'internationalDrivingPermit']) {
+        assert.equal(Object.hasOwn(history.body.data[0], field), false);
+      }
+      const own = await admin.request(`${path}?userId=${user.id}`);
+      assert.deepEqual(own.body.data.map(({ id }: { id: string }) => id), [legacy.id]);
+      assert.equal(own.body.data[0].carSnapshot, null);
+      assert.equal(own.body.data[0].car.model, car.model);
+      assert.equal(own.body.data[0].dropoffLocation, null);
     });
   } finally {
     if (carId) {

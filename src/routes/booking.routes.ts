@@ -4,7 +4,7 @@ import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
 import prisma from "../lib/prisma.js";
 import { registrationSchema, registrationData } from "../lib/registration.js";
-import { requireAdmin, requireJson } from "../middleware/auth.js";
+import { requireAdmin, requireAuth, requireJson } from "../middleware/auth.js";
 import { calculateCarRentalPrice } from "../utils/pricing.js";
 import {
   candidateCars,
@@ -291,6 +291,34 @@ router.get("/", requireAdmin, async (req, res, next) => {
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );
     res.set("Cache-Control", "no-store").json({ success: true, ...result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/mine", requireAuth, async (_req, res, next) => {
+  try {
+    const location = { name: true, nameTh: true, timeZone: true } as const;
+    const bookings = await prisma.booking.findMany({
+      where: { userId: res.locals.session.user.id },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      select: {
+        id: true,
+        bookingNumber: true,
+        status: true,
+        createdAt: true,
+        startDateTime: true,
+        endDateTime: true,
+        totalPrice: true,
+        currencyCode: true,
+        timeZone: true,
+        carSnapshot: true,
+        car: { select: { brand: true, model: true } },
+        pickupLocation: { select: location },
+        dropoffLocation: { select: location },
+      },
+    });
+    res.set("Cache-Control", "no-store").json({ success: true, data: bookings });
   } catch (error) {
     next(error);
   }
