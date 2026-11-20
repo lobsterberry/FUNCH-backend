@@ -2,14 +2,14 @@ import { Prisma } from "@prisma/client";
 import { bookings, cars, demoVehicleDetails, locations } from "./seed-data.js";
 import {
   legacyValues,
-  lockFleet,
+  lockCarInventory,
   offerInclude,
-  type FleetTx,
-} from "../src/lib/fleet.js";
+  type InventoryTx,
+} from "../src/lib/car-inventory.js";
 
 // Two more registrations at the original branch, plus two at another branch in the same country.
 // Stable IDs and create-only writes preserve edited vehicles, transfers and bookings on reruns.
-export const fleetExpansionPlan = cars.flatMap((source, index) => {
+export const carExpansionPlan = cars.flatMap((source, index) => {
   const home = locations.find((location) => location.id === source.locationId)!;
   const alternatives = locations.filter(
     (location) =>
@@ -27,6 +27,7 @@ export const fleetExpansionPlan = cars.flatMap((source, index) => {
     sourceId: source.id!,
     locationId,
     units: [1, 2].map((unit) => {
+      // Existing installations use this ID format for seeded cars.
       const id = `${source.id}-fleet-${branchIndex + 1}-${unit}`;
       return {
         id,
@@ -37,11 +38,11 @@ export const fleetExpansionPlan = cars.flatMap((source, index) => {
   }));
 });
 
-export async function fillMissingDemoVehicleDetails(tx: FleetTx) {
-  await lockFleet(tx);
+export async function fillMissingDemoVehicleDetails(tx: InventoryTx) {
+  await lockCarInventory(tx);
   const vehicles = [
     ...cars,
-    ...fleetExpansionPlan.flatMap(({ units }) => units),
+    ...carExpansionPlan.flatMap(({ units }) => units),
   ];
   const details = vehicles.map(
     ({ id, exteriorColor, vin, odometerKm }) =>
@@ -59,11 +60,11 @@ export async function fillMissingDemoVehicleDetails(tx: FleetTx) {
   `;
 }
 
-export async function expandDemoFleet(tx: FleetTx) {
-  await lockFleet(tx);
+export async function expandDemoCars(tx: InventoryTx) {
+  await lockCarInventory(tx);
   let createdCars = 0,
     createdOffers = 0;
-  for (const group of fleetExpansionPlan) {
+  for (const group of carExpansionPlan) {
     const source = await tx.car.findUnique({
       where: { id: group.sourceId },
       include: { carModelLocation: { include: offerInclude } },

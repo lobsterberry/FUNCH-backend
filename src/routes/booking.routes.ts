@@ -11,12 +11,12 @@ import {
   canSchedule,
   effectiveCar,
   inventoryInclude,
-  lockFleet,
+  lockCarInventory,
   offerInclude,
   reservedStatuses,
   validItinerary,
-  type FleetTx,
-} from "../lib/fleet.js";
+  type InventoryTx,
+} from "../lib/car-inventory.js";
 
 const router = Router();
 const rentalFields = {
@@ -73,7 +73,7 @@ class RentalError extends Error {
   }
 }
 type RentalInput = z.infer<typeof rentalSchema>;
-async function rentalSelection(tx: FleetTx, input: RentalInput) {
+async function rentalSelection(tx: InventoryTx, input: RentalInput) {
   const physical = input.carId
     ? await tx.car.findUnique({
         where: { id: input.carId },
@@ -341,7 +341,7 @@ router.post("/", requireJson, bookingLimiter, async (req, res, next) => {
       : undefined;
     const booking = await prisma.$transaction(
       async (tx) => {
-        await lockFleet(tx);
+        await lockCarInventory(tx);
         if (input.carId)
           await tx.$queryRaw`SELECT id FROM cars WHERE id = ${input.carId} FOR UPDATE`;
         if (input.carId && expectedCar) {
@@ -479,7 +479,7 @@ router.patch(
         .strict()
         .parse(req.body);
       const booking = await prisma.$transaction(async (tx) => {
-        await lockFleet(tx);
+        await lockCarInventory(tx);
         const old = await tx.booking.findUnique({
           where: { id: req.params.id },
           include: { car: true },

@@ -7,84 +7,18 @@ import {
   attachLegacyCar,
   effectiveCar,
   inventoryInclude,
-  lockFleet,
+  lockCarInventory,
   modelData,
-} from "../lib/fleet.js";
-import { fleetState, inventoryStatus } from "../lib/fleet-state.js";
+} from "../lib/car-inventory.js";
+import { carState, resolveOperationalStatus } from "../lib/car-state.js";
+import { formatCar } from "../lib/car-format.js";
+import carInventoryRoutes, {
+  createInventoryCar,
+  updateInventoryCar,
+} from "./car-inventory.routes.js";
 
 const router = Router();
-
-export function formatCar(car: any) {
-  car = effectiveCar(car);
-  const brand = car.brand || "";
-  const model = car.model || "";
-  const fullName =
-    brand && !model.startsWith(brand) ? `${brand} ${model}` : model;
-  const fuel = car.fuelType || "Gasoline";
-  const color =
-    fuel === "EV"
-      ? "text-blue-600"
-      : fuel === "Hybrid"
-        ? "text-emerald-700"
-        : car.categories?.includes("LUXURY")
-          ? "text-slate-800"
-          : "text-slate-700";
-
-  const category = car.categoryLabel || car.categories?.[0] || "Sedan";
-
-  const features = Array.isArray(car.options)
-    ? car.options.map((opt: any) =>
-        typeof opt === "string" ? opt : opt.label || opt.code,
-      )
-    : car.featureCodes || [];
-
-  return {
-    id: car.id,
-    carModelLocationId: car.carModelLocationId,
-    carModelId: car.carModelLocation?.carModelId,
-    brand: car.brand,
-    name: fullName,
-    model: `${fullName} ${car.year || 2024}`,
-    country: car.country,
-    city: car.location?.cityTh || car.location?.city || "",
-    category,
-    badge: car.badge || car.categoryLabel || category,
-    description: car.description || "",
-    seats: car.seats ?? 4,
-    bags: car.luggageCapacity ?? 2,
-    gear: car.transmission || "Automatic",
-    transmissionType: car.transmissionType,
-    categories: car.categories,
-    fuel,
-    steering:
-      car.steeringSide === "RHD" ? ("right" as const) : ("left" as const),
-    day: Number(car.dailyRate),
-    hour: Number(car.hourlyRate),
-    hourlyRate: car.hourlyRate,
-    dailyRate: car.dailyRate,
-    currencyCode: car.currencyCode || "THB",
-    rating: Number(car.rating) || 4.8,
-    reviews: car.reviewCount || 0,
-    features,
-    provider: car.providerName || "FUNCH Rental",
-    color,
-    featured: Boolean(car.isFeatured),
-    isAvailable: car.isAvailable !== false,
-    operationalStatus:
-      car.isAvailable === false &&
-      (!car.operationalStatus || car.operationalStatus === "AVAILABLE")
-        ? "INACTIVE"
-        : (car.operationalStatus ?? "AVAILABLE"),
-    exteriorColor: car.exteriorColor ?? null,
-    odometerKm: car.odometerKm ?? null,
-    vin: car.vin ?? null,
-    availableFrom: car.availableFrom ?? null,
-    licensePlate: car.licensePlate,
-    locationId: car.locationId,
-    location: car.location,
-    countryInfo: car.countryInfo,
-  };
-}
+router.use(carInventoryRoutes);
 
 // GET /api/cars/meta - ดึงข้อมูล category, fuel, features ที่มีอยู่ในฐานข้อมูล
 router.get("/meta", async (_req: Request, res: Response) => {
@@ -193,7 +127,7 @@ router.get("/admin", requireAdmin, async (_req, res, next) => {
         transmissionType: effectiveCar(car).transmissionType,
         featureCodes: effectiveCar(car).featureCodes,
         options: effectiveCar(car).options,
-        ...fleetState(car, now),
+        ...carState(car, now),
       })),
     });
   } catch (error) {
@@ -225,6 +159,10 @@ router.get("/:id", async (req: Request, res: Response) => {
 
 // POST /api/cars - เพิ่มข้อมูลรถ (สำหรับระบบหลังบ้าน Admin)
 router.post("/", requireJson, requireAdmin, async (req, res, next) => {
+  if (Object.hasOwn(req.body ?? {}, "carModelLocationId")) {
+    return createInventoryCar(req, res, next);
+  }
+
   try {
     const data = carInputSchema.parse(req.body);
     if (!(await validCarLocation(data.country, data.locationId))) {
@@ -237,9 +175,9 @@ router.post("/", requireJson, requireAdmin, async (req, res, next) => {
       return;
     }
     const car = await prisma.$transaction(async (tx) => {
-      await lockFleet(tx);
+      await lockCarInventory(tx);
       const created = await tx.car.create({
-        data: { ...data, operationalStatus: inventoryStatus(data.isAvailable) },
+        data: { ...data, operationalStatus: resolveOperationalStatus(data.isAvailable) },
       });
       await attachLegacyCar(tx, created);
       return tx.car.findUniqueOrThrow({
@@ -265,6 +203,10 @@ async function validCarLocation(country: string, locationId: string | null) {
 }
 
 router.patch("/:id", requireJson, requireAdmin, async (req, res, next) => {
+  if (Object.hasOwn(req.body ?? {}, "carModelLocationId")) {
+    return updateInventoryCar(req, res, next);
+  }
+
   try {
     const data = carInputSchema.parse(req.body);
     if (!(await validCarLocation(data.country, data.locationId))) {
@@ -277,7 +219,7 @@ router.patch("/:id", requireJson, requireAdmin, async (req, res, next) => {
       return;
     }
     const car = await prisma.$transaction(async (tx) => {
-      await lockFleet(tx);
+      await lockCarInventory(tx);
       // Share the reservation lock so a car cannot move while a booking is created.
       await tx.$queryRaw`SELECT id FROM cars WHERE id = ${req.params.id} FOR UPDATE`;
       const existing = await tx.car.findUnique({
@@ -299,7 +241,7 @@ router.patch("/:id", requireJson, requireAdmin, async (req, res, next) => {
           },
         }))
       )
-        throw new Error("FLEET_BOOKED");
+        throw new Error("HAS_ACTIVE_BOOKINGS");
       const changedSpecification = Object.entries(modelData(data)).some(
         ([key, value]) => !isDeepStrictEqual((existing as any)[key], value),
       );
@@ -312,7 +254,7 @@ router.patch("/:id", requireJson, requireAdmin, async (req, res, next) => {
           },
         }))
       )
-        throw new Error("FLEET_BOOKED");
+        throw new Error("HAS_ACTIVE_BOOKINGS");
       if (
         existing.country !== data.country ||
         existing.locationId !== data.locationId
@@ -330,7 +272,7 @@ router.patch("/:id", requireJson, requireAdmin, async (req, res, next) => {
         where: { id: existing.id },
         data: {
           ...data,
-          operationalStatus: inventoryStatus(
+          operationalStatus: resolveOperationalStatus(
             data.isAvailable,
             undefined,
             existing.operationalStatus,

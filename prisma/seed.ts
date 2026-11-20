@@ -11,12 +11,12 @@ import {
   pricingExamples,
   users,
 } from "./seed-data.js";
-import { attachLegacyCar, lockFleet } from "../src/lib/fleet.js";
+import { attachLegacyCar, lockCarInventory } from "../src/lib/car-inventory.js";
 import {
-  expandDemoFleet,
+  expandDemoCars,
   fillMissingDemoVehicleDetails,
-  fleetExpansionPlan,
-} from "./fleet-seed.js";
+  carExpansionPlan,
+} from "./car-seed.js";
 
 function validateData() {
   for (const rows of [
@@ -34,7 +34,7 @@ function validateData() {
   }
   const vehicles = [
     ...cars,
-    ...fleetExpansionPlan.flatMap(({ units }) => units),
+    ...carExpansionPlan.flatMap(({ units }) => units),
   ];
   assert.equal(
     new Set(vehicles.map(({ vin }) => vin)).size,
@@ -112,7 +112,7 @@ async function main() {
     locations: locations.length,
     cars:
       cars.length +
-      fleetExpansionPlan.reduce(
+      carExpansionPlan.reduce(
         (total, group) => total + group.units.length,
         0,
       ),
@@ -142,7 +142,7 @@ async function main() {
     // Stable IDs + upsert refresh only demo rows. Never delete application data.
     const expansion = await prisma.$transaction(
       async (tx) => {
-        await lockFleet(tx);
+        await lockCarInventory(tx);
         for (const country of countries) {
           await tx.country.upsert({
             where: { code: country.code },
@@ -196,7 +196,7 @@ async function main() {
             update: booking,
           });
         }
-        const result = await expandDemoFleet(tx);
+        const result = await expandDemoCars(tx);
         const filledVehicleDetails = await fillMissingDemoVehicleDetails(tx);
         return { ...result, filledVehicleDetails };
       },

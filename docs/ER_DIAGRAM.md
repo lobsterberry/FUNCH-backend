@@ -1,6 +1,6 @@
 # Entity-Relationship (ER) Diagram - FUNCH Car Rental System
 
-เอกสารแสดงโครงสร้างฐานข้อมูลและแผนภาพแสดงความสัมพันธ์ของข้อมูล (Entity-Relationship Diagram) สำหรับระบบบริการเช่ารถยนต์ **FUNCH** โดยอ้างอิงจากข้อกำหนดใน `Assignment.md`, โครงสร้าง `schema.prisma`, และสถาปัตยกรรม Fleet V2 ใน `backend/docs/fleet.md`
+เอกสารแสดงโครงสร้างฐานข้อมูลและแผนภาพแสดงความสัมพันธ์ของข้อมูล (Entity-Relationship Diagram) สำหรับระบบบริการเช่ารถยนต์ **FUNCH** โดยอ้างอิงจากข้อกำหนดใน `Assignment.md`, โครงสร้าง `schema.prisma`, และโครงสร้างรุ่นรถและข้อเสนอรายสาขา ใน `backend/docs/cars.md`
 
 ---
 
@@ -15,7 +15,7 @@ erDiagram
     CAR_MODEL ||--o{ CAR_MODEL_LOCATION : "defines_specs"
     
     LOCATION ||--o{ CAR : "currently_parked_at"
-    CAR_MODEL_LOCATION ||--o{ CAR : "assigned_fleet"
+    CAR_MODEL_LOCATION ||--o{ CAR : "assigned_cars"
     
     USER ||--o{ BOOKING : "places_as_customer"
     USER ||--o{ BOOKING : "reviews_as_admin"
@@ -96,7 +96,7 @@ erDiagram
         uuid id PK "Model-Branch Offer ID"
         uuid carModelId FK "References CarModel(id)"
         uuid locationId FK "References Location(id)"
-        string providerName "Operating fleet provider"
+        string providerName "Car rental provider"
         decimal hourlyRate "Rental rate per hour (THB)"
         decimal dailyRate "Rental rate per day (THB)"
         string currencyCode "Currency code (THB)"
@@ -111,7 +111,7 @@ erDiagram
         string licensePlate "License plate string"
         string country FK "Registered country code (Unique with plate)"
         uuid locationId FK "Current physical location"
-        uuid carModelLocationId FK "Assigned fleet offer group"
+        uuid carModelLocationId FK "Assigned branch offer"
         string brand "Compatibility mirror: Brand"
         string model "Compatibility mirror: Model"
         int year "Compatibility mirror: Year"
@@ -219,9 +219,9 @@ erDiagram
 
 ---
 
-### 2.3 กลุ่มจัดการรถและกลุ่มสเปก (Fleet & Inventory Management V2)
+### 2.3 กลุ่มจัดการรถและกลุ่มสเปก (Car Inventory Management)
 
-ระบบใช้สถาปัตยกรรมแบบ **3-Tier Fleet Management** (`CarModel` → `CarModelLocation` → `Car`):
+ระบบใช้สถาปัตยกรรมแบบ **Three-tier car inventory** (`CarModel` → `CarModelLocation` → `Car`):
 
 ```
 +-------------------+

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canSchedule } from '../src/lib/fleet.js';
+import { canSchedule } from '../src/lib/car-inventory.js';
 
 const time = (hour: number) => new Date(Date.UTC(2030, 0, 1, hour));
 const rental = (start: number, end: number, pickup = 'A', dropoff = 'A', turnaroundMinutes = 0) => ({

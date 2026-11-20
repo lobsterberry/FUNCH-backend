@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 
-test('admin login and fleet management HTTP flow', { skip: !process.env.AUTH_TEST_DATABASE_URL }, async (t) => {
+test('admin login and car management HTTP flow', { skip: !process.env.AUTH_TEST_DATABASE_URL }, async (t) => {
   process.env.DATABASE_URL = process.env.AUTH_TEST_DATABASE_URL;
   process.env.AUTH_SECRET = 'admin-integration-test-secret-1234567890';
   process.env.NODE_ENV = 'test';
@@ -14,8 +14,8 @@ test('admin login and fleet management HTTP flow', { skip: !process.env.AUTH_TES
   const { hashPassword } = await import('../src/utils/password.js');
   const runId = randomUUID();
   const password = 'AdminTestPassword123!';
-  const adminEmail = `fleet-admin-${runId}@funch.example`;
-  const memberEmail = `fleet-member-${runId}@funch.example`;
+  const adminEmail = `cars-admin-${runId}@funch.example`;
+  const memberEmail = `cars-member-${runId}@funch.example`;
   const server = createApp().listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -44,15 +44,15 @@ test('admin login and fleet management HTTP flow', { skip: !process.env.AUTH_TES
   let userId = '';
   try {
     const hash = await hashPassword(password);
-    await prisma.user.create({ data: { email: adminEmail, name: 'Fleet Test Admin', password: hash, role: 'ADMIN' } });
-    userId = (await prisma.user.create({ data: { email: memberEmail, name: 'Fleet Test Member', password: hash } })).id;
+    await prisma.user.create({ data: { email: adminEmail, name: 'Car Test Admin', password: hash, role: 'ADMIN' } });
+    userId = (await prisma.user.create({ data: { email: memberEmail, name: 'Car Test Member', password: hash } })).id;
     const location = await prisma.location.findFirstOrThrow({ where: { countryCode: 'JP' } });
     const input = {
       brand: 'Integration', model: 'Test Car', year: 2026, licensePlate: `test-${runId}`, country: 'JP',
       hourlyRate: 123.45, dailyRate: 999.99, seats: 5, luggageCapacity: 3,
       transmission: 'Automatic', transmissionType: 'AUTOMATIC', fuelType: 'Hybrid', steeringSide: 'RHD',
       locationId: location.id, categories: ['SUV', 'ECO'], categoryLabel: 'Test SUV',
-      providerName: 'Integration Fleet', isAvailable: false, featureCodes: ['GPS_EN'],
+      providerName: 'Integration Cars', isAvailable: false, featureCodes: ['GPS_EN'],
       options: [{ code: 'GPS_EN', label: 'GPS ภาษาอังกฤษ', included: true }],
     };
     await t.test('admin-scoped login rejects members and accepts active admins', async () => {
@@ -88,6 +88,9 @@ test('admin login and fleet management HTTP flow', { skip: !process.env.AUTH_TES
       assert.equal((await admin.request('/api/cars', 'POST', input)).status, 409);
     });
     await t.test('invalid rates, fields and country/location combinations cannot be saved', async () => {
+      const mixedInput = { ...input, carModelLocationId: 'existing-offer' };
+      assert.equal((await admin.request('/api/cars', 'POST', mixedInput)).status, 400);
+      assert.equal((await admin.request(`/api/cars/${carId}`, 'PATCH', mixedInput)).status, 400);
       for (const change of [{ hourlyRate: -1 }, { dailyRate: 1.001 }, { seats: 0 }, { categories: ['INVALID'] }, { country: 'TH' }, { role: 'ADMIN' }]) {
         assert.equal((await admin.request(`/api/cars/${carId}`, 'PATCH', { ...input, ...change })).status, 400);
       }
@@ -100,7 +103,7 @@ test('admin login and fleet management HTTP flow', { skip: !process.env.AUTH_TES
       assert.ok(carModelLocation);
       const imageUrl = 'https://example.com/model.jpg';
       const { licensePlate, country, hourlyRate, dailyRate, locationId, providerName, isAvailable, ...specification } = input;
-      const model = await admin.request(`/api/fleet/models/${carModelLocation.carModelId}`, 'PATCH', { ...specification, imageUrl });
+      const model = await admin.request(`/api/cars/models/${carModelLocation.carModelId}`, 'PATCH', { ...specification, imageUrl });
       assert.equal(model.status, 200);
       assert.equal(model.data.data.imageUrl, imageUrl);
       const updated = await admin.request(`/api/cars/${carId}`, 'PATCH', { ...input, model: 'Updated', dailyRate: 1500, isAvailable: true });
