@@ -8,7 +8,7 @@ type UnitState = {
   bookings: { status: string; startDateTime: Date; endDateTime: Date }[];
 };
 
-export function fleetState(car: UnitState, now = new Date()) {
+export function carState(car: UnitState, now = new Date()) {
   const bookings = car.bookings.filter((booking) =>
     ["PENDING", "APPROVED"].includes(booking.status),
   );
@@ -18,7 +18,7 @@ export function fleetState(car: UnitState, now = new Date()) {
     : bookings.length
       ? "RESERVED"
       : "IDLE";
-  const fleetStatus =
+  const inventoryStatus =
     car.operationalStatus !== "AVAILABLE"
       ? car.operationalStatus
       : !car.isAvailable
@@ -34,14 +34,14 @@ export function fleetState(car: UnitState, now = new Date()) {
                 : "AVAILABLE";
   return {
     rentalStatus,
-    fleetStatus,
+    inventoryStatus,
     overdue,
     hasBookings: bookings.length > 0,
   };
 }
 
 // Old clients can still send just the service flag without losing an existing reason.
-export function inventoryStatus(
+export function resolveOperationalStatus(
   isAvailable: boolean,
   status?: VehicleStatus,
   previous?: VehicleStatus,

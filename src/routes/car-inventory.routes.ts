@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
@@ -9,13 +9,13 @@ import {
   canSchedule,
   inventoryInclude,
   legacyValues,
-  lockFleet,
+  lockCarInventory,
   offerInclude,
   reservedStatuses,
-} from "../lib/fleet.js";
-import { formatCar } from "./car.routes.js";
+} from "../lib/car-inventory.js";
+import { formatCar } from "../lib/car-format.js";
 import { calculateCarRentalPrice } from "../utils/pricing.js";
-import { fleetState, inventoryStatus } from "../lib/fleet-state.js";
+import { carState, resolveOperationalStatus } from "../lib/car-state.js";
 
 const router = Router();
 const modelSchema = carInputSchema
@@ -266,17 +266,17 @@ router.get("/catalog", requireAdmin, async (_req, res, next) => {
         currentOffers.find((offer) => offer.id === car.carModelLocationId) ??
         currentOffers.find((offer) => offer.isActive) ??
         currentOffers[0];
-      const state = fleetState(car, now);
+      const state = carState(car, now);
       return {
         ...formatCar(car),
         rawModel: car.carModelLocation?.carModel.model ?? car.model,
         year: car.year,
         ...state,
-        fleetStatus:
-          state.fleetStatus === "AVAILABLE" &&
+        inventoryStatus:
+          state.inventoryStatus === "AVAILABLE" &&
           !currentOffers.some((offer) => offer.isActive)
             ? "INACTIVE"
-            : state.fleetStatus,
+            : state.inventoryStatus,
         featureCodes:
           car.carModelLocation?.carModel.featureCodes ?? car.featureCodes,
         options: car.carModelLocation?.carModel.options ?? car.options,
@@ -325,11 +325,11 @@ router.get("/catalog", requireAdmin, async (_req, res, next) => {
               .map((offer) => offer.location.countryCode),
           ).size,
           total: units.length,
-          available: units.filter((unit) => unit.fleetStatus === "AVAILABLE")
+          available: units.filter((unit) => unit.inventoryStatus === "AVAILABLE")
             .length,
           inUse: units.filter((unit) => unit.rentalStatus === "IN_USE").length,
           maintenance: units.filter(
-            (unit) => unit.fleetStatus === "MAINTENANCE",
+            (unit) => unit.inventoryStatus === "MAINTENANCE",
           ).length,
         },
         generatedAt: now.toISOString(),
@@ -372,7 +372,7 @@ router.post("/models", requireJson, requireAdmin, async (req, res, next) => {
   try {
     const data = modelSchema.parse(req.body);
     const model = await prisma.$transaction(async (tx) => {
-      await lockFleet(tx);
+      await lockCarInventory(tx);
       return tx.carModel.create({ data });
     });
     res.status(201).json({ success: true, data: model });
@@ -388,7 +388,7 @@ router.patch(
     try {
       const { imageUrl, ...data } = modelSchema.parse(req.body);
       const model = await prisma.$transaction(async (tx) => {
-        await lockFleet(tx);
+        await lockCarInventory(tx);
         if (!(await tx.carModel.findUnique({ where: { id: req.params.id } })))
           return null;
         // Booked specifications stay fixed until outstanding journeys are resolved.
@@ -400,7 +400,7 @@ router.patch(
             },
           })
         )
-          throw new Error("FLEET_BOOKED");
+          throw new Error("HAS_ACTIVE_BOOKINGS");
         const updated = await tx.carModel.update({
           where: { id: req.params.id },
           data: { ...data, imageUrl },
@@ -426,7 +426,7 @@ router.post("/offers", requireJson, requireAdmin, async (req, res, next) => {
   try {
     const data = offerSchema.parse(req.body);
     const offer = await prisma.$transaction(async (tx) => {
-      await lockFleet(tx);
+      await lockCarInventory(tx);
       if (
         !(await tx.carModel.findUnique({ where: { id: data.carModelId } })) ||
         !(await tx.location.findUnique({ where: { id: data.locationId } }))
@@ -453,7 +453,7 @@ router.patch(
     try {
       const data = offerSchema.parse(req.body);
       const offer = await prisma.$transaction(async (tx) => {
-        await lockFleet(tx);
+        await lockCarInventory(tx);
         const old = await tx.carModelLocation.findUnique({
           where: { id: req.params.id },
         });
@@ -492,11 +492,11 @@ router.patch(
 );
 
 // One transaction: a duplicate registration rejects the entire batch.
-router.post("/cars/bulk", requireJson, requireAdmin, async (req, res, next) => {
+router.post("/bulk", requireJson, requireAdmin, async (req, res, next) => {
   try {
     const input = bulkInventorySchema.parse(req.body);
     const cars = await prisma.$transaction(async (tx) => {
-      await lockFleet(tx);
+      await lockCarInventory(tx);
       const offer = await tx.carModelLocation.findUnique({
         where: { id: input.carModelLocationId },
         include: offerInclude,
@@ -512,7 +512,7 @@ router.post("/cars/bulk", requireJson, requireAdmin, async (req, res, next) => {
             year: input.year,
             licensePlate,
             isAvailable: input.isAvailable,
-            operationalStatus: inventoryStatus(
+            operationalStatus: resolveOperationalStatus(
               input.isAvailable,
               input.operationalStatus,
             ),
@@ -540,12 +540,16 @@ router.post("/cars/bulk", requireJson, requireAdmin, async (req, res, next) => {
   }
 });
 
-router.post("/cars", requireJson, requireAdmin, async (req, res, next) => {
+export async function createInventoryCar(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
   try {
     const input = inventorySchema.refine(validStatus).parse(req.body);
     const { transfer: _transfer, transferNote: _note, ...values } = input;
     const car = await prisma.$transaction(async (tx) => {
-      await lockFleet(tx);
+      await lockCarInventory(tx);
       const offer = await tx.carModelLocation.findUnique({
         where: { id: input.carModelLocationId },
         include: offerInclude,
@@ -555,7 +559,7 @@ router.post("/cars", requireJson, requireAdmin, async (req, res, next) => {
         data: {
           ...legacyValues(offer),
           ...values,
-          operationalStatus: inventoryStatus(
+          operationalStatus: resolveOperationalStatus(
             input.isAvailable,
             input.operationalStatus,
           ),
@@ -572,13 +576,18 @@ router.post("/cars", requireJson, requireAdmin, async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
-router.patch("/cars/:id", requireJson, requireAdmin, async (req, res, next) => {
+}
+
+export async function updateInventoryCar(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
   try {
     const input = inventorySchema.refine(validStatus).parse(req.body);
     const { transfer, transferNote, ...values } = input;
     const car = await prisma.$transaction(async (tx) => {
-      await lockFleet(tx);
+      await lockCarInventory(tx);
       await tx.$queryRaw`SELECT id FROM cars WHERE id = ${req.params.id} FOR UPDATE`;
       const old = await tx.car.findUnique({
         where: { id: req.params.id },
@@ -592,7 +601,7 @@ router.patch("/cars/:id", requireJson, requireAdmin, async (req, res, next) => {
       if (!offer || input.year !== offer.carModel.year)
         throw new Error("INVALID_OFFER");
       const moving = old.carModelLocationId !== offer.id || transfer === true;
-      const operationalStatus = inventoryStatus(
+      const operationalStatus = resolveOperationalStatus(
         input.isAvailable,
         input.operationalStatus,
         old.operationalStatus,
@@ -604,7 +613,7 @@ router.patch("/cars/:id", requireJson, requireAdmin, async (req, res, next) => {
           where: { carId: old.id, status: { in: [...reservedStatuses] } },
         }))
       ) {
-        throw new Error("FLEET_BOOKED");
+        throw new Error("HAS_ACTIVE_BOOKINGS");
       }
       if (moving) {
         if (
@@ -621,7 +630,7 @@ router.patch("/cars/:id", requireJson, requireAdmin, async (req, res, next) => {
             where: { carId: old.id, status: { in: [...reservedStatuses] } },
           })
         )
-          throw new Error("FLEET_BOOKED");
+          throw new Error("HAS_ACTIVE_BOOKINGS");
         if (old.locationId !== offer.locationId)
           await tx.carMovement.create({
             data: {
@@ -653,9 +662,9 @@ router.patch("/cars/:id", requireJson, requireAdmin, async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+}
 
-router.get("/cars/:id/schedule", requireAdmin, async (req, res, next) => {
+router.get("/:id/schedule", requireAdmin, async (req, res, next) => {
   try {
     const car = await prisma.car.findUnique({
       where: { id: req.params.id },

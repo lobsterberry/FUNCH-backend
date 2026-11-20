@@ -12,7 +12,7 @@ try {
   const cars = await db.$queryRaw`SELECT to_jsonb(c) AS data FROM cars c ORDER BY id`;
   const bookings = await db.$queryRaw`SELECT to_jsonb(b) AS data FROM bookings b ORDER BY id`;
   mkdirSync('backups', { recursive: true });
-  const backup = `backups/fleet-${new Date().toISOString().replaceAll(/[:.]/g, '-')}.json`;
+  const backup = `backups/cars-${new Date().toISOString().replaceAll(/[:.]/g, '-')}.json`;
   writeFileSync(backup, JSON.stringify({ createdAt: new Date().toISOString(), cars, bookings }, null, 2), { flag: 'wx' });
   console.log(`Saved ${cars.length} cars and ${bookings.length} bookings to ${backup}`);
   const result = spawnSync(process.execPath, ['node_modules/prisma/build/index.js', 'migrate', 'deploy'], { stdio: 'inherit', env: process.env });

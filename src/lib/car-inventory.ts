@@ -1,6 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 
-export type FleetTx = Prisma.TransactionClient;
+export type InventoryTx = Prisma.TransactionClient;
 export const offerInclude = {
   carModel: true,
   location: { include: { country: true } },
@@ -13,8 +13,8 @@ export const inventoryInclude = {
 export const reservedStatuses = ["PENDING", "APPROVED"] as const;
 
 // Keep a single lock order for offer edits, allocation, status changes and transfers.
-// This modest fleet uses one transaction advisory lock; searches remain lock-free.
-export async function lockFleet(tx: FleetTx) {
+// Inventory writes share one transaction advisory lock; searches remain lock-free.
+export async function lockCarInventory(tx: InventoryTx) {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(64172839)`;
 }
 
@@ -51,7 +51,7 @@ export function modelData(car: Record<string, any>) {
 // Compatibility bridge for old inventory clients and idempotent demo seeding.
 // New clients explicitly create a model, an offer, then individual registrations.
 export async function attachLegacyCar(
-  tx: FleetTx,
+  tx: InventoryTx,
   car: any,
   imageUrl: string | null = null,
 ) {
@@ -148,7 +148,7 @@ export function validItinerary(
   return true;
 }
 
-export async function candidateCars(db: FleetTx | PrismaClient, offer: any) {
+export async function candidateCars(db: InventoryTx | PrismaClient, offer: any) {
   return db.car.findMany({
     where: {
       isAvailable: true,

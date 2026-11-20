@@ -7,14 +7,14 @@ import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PrismaClient } from '@prisma/client';
 
-const schema = `fleet_test_${randomUUID().replaceAll('-', '')}`;
-const folder = resolve(`.fleet-test-${schema}`);
+const schema = `cars_test_${randomUUID().replaceAll('-', '')}`;
+const folder = resolve(`.cars-test-${schema}`);
 const url = new URL(process.env.DATABASE_URL);
 assert.ok(['localhost', '127.0.0.1'].includes(url.hostname), 'This runner only creates test schemas on local PostgreSQL');
 url.searchParams.set('schema', schema);
 const testUrl = url.toString();
 const env = { ...process.env, DATABASE_URL: testUrl, AUTH_TEST_DATABASE_URL: testUrl,
-  NODE_ENV: 'test', SEED_USER_PASSWORD: 'FleetTestSeedPassword123!' };
+  NODE_ENV: 'test', SEED_USER_PASSWORD: 'CarsTestSeedPassword123!' };
 // Windows can have the default engine loaded by a separate running development process.
 if (existsSync('node_modules/@prisma/engines/funch-query-engine.dll.node')) {
   env.PRISMA_QUERY_ENGINE_LIBRARY = resolve('node_modules/@prisma/engines/funch-query-engine.dll.node');
@@ -31,9 +31,9 @@ try {
   cpSync('prisma/schema.prisma', `${folder}/schema.prisma`);
   cpSync('prisma/migrations/migration_lock.toml', `${folder}/migrations/migration_lock.toml`);
   const migrations = readdirSync('prisma/migrations').filter((name) => /^\d/.test(name)).sort();
-  const fleetMigration = migrations.indexOf('20261117000000_model_fleet_locations');
-  assert.ok(fleetMigration > 0);
-  for (const migration of migrations.slice(0, fleetMigration)) cpSync(`prisma/migrations/${migration}`, `${folder}/migrations/${migration}`, { recursive: true });
+  const carLocationsMigration = migrations.indexOf('20261117000000_model_fleet_locations');
+  assert.ok(carLocationsMigration > 0);
+  for (const migration of migrations.slice(0, carLocationsMigration)) cpSync(`prisma/migrations/${migration}`, `${folder}/migrations/${migration}`, { recursive: true });
   prisma('migrate', 'deploy', '--schema', `${folder}/schema.prisma`);
   await db.$executeRaw`INSERT INTO countries (code,name,"nameTh",flag,"currencyCode","drivingSide") VALUES ('ZZ','Migration fixture','Migration fixture','ZZ','THB','LEFT')`;
   await db.$executeRaw`INSERT INTO locations (id,name,"nameTh",city,"cityTh","countryCode","timeZone") VALUES ('legacy-A','A','A','Test','Test','ZZ','UTC'), ('legacy-B','B','B','Test','Test','ZZ','UTC')`;
@@ -46,7 +46,7 @@ try {
   await db.$executeRaw`INSERT INTO bookings (id,"bookingNumber","userId","carId","startDateTime","endDateTime","totalPrice","hourlyRate","dailyRate","pickupLocationId","dropoffLocationId","updatedAt") VALUES ('legacy-booking','legacy-number','legacy-user','legacy-1','2030-01-01T09:00:00Z','2030-01-01T17:00:00Z',1234.50,100,1000,'legacy-A','legacy-A',NOW())`;
   await db.$executeRaw`UPDATE cars SET "isAvailable" = false WHERE id = 'legacy-unassigned'`;
   const [before] = await db.$queryRaw`SELECT to_jsonb(b) AS data FROM bookings b WHERE id='legacy-booking'`;
-  for (const migration of migrations.slice(fleetMigration)) cpSync(`prisma/migrations/${migration}`, `${folder}/migrations/${migration}`, { recursive: true });
+  for (const migration of migrations.slice(carLocationsMigration)) cpSync(`prisma/migrations/${migration}`, `${folder}/migrations/${migration}`, { recursive: true });
   prisma('migrate', 'deploy', '--schema', `${folder}/schema.prisma`);
   const saved = await db.booking.findUniqueOrThrow({ where: { id: 'legacy-booking' } });
   assert.equal(saved.carId, 'legacy-1'); assert.equal(saved.totalPrice.toString(), '1234.5');
@@ -96,14 +96,14 @@ try {
   const edited = await db.car.findFirstOrThrow({ where: { id: { contains: '-fleet-' } } });
   await db.car.update({ where: { id: edited.id }, data: { licensePlate: 'EDITED-DEMO-REGISTRATION', isAvailable: false } });
   const editedBefore = await db.car.findUniqueOrThrow({ where: { id: edited.id } });
-  run(['--import', 'tsx', 'scripts/seed-fleet.ts']);
-  assert.deepEqual(await db.car.findUniqueOrThrow({ where: { id: edited.id } }), editedBefore, 'Additive fleet seeding must retain edits');
+  run(['--import', 'tsx', 'scripts/seed-cars.ts']);
+  assert.deepEqual(await db.car.findUniqueOrThrow({ where: { id: edited.id } }), editedBefore, 'Additive car seeding must retain edits');
   run(['--import', 'tsx', '--test', ...readdirSync('tests').filter((name) => name.endsWith('.test.ts')).map((name) => `tests/${name}`)]);
 } finally {
   // Only the randomly generated schema above can reach this cleanup.
-  assert.match(schema, /^fleet_test_[a-f0-9]{32}$/);
+  assert.match(schema, /^cars_test_[a-f0-9]{32}$/);
   await db.$executeRawUnsafe(`DROP SCHEMA "${schema}" CASCADE`);
   await db.$disconnect();
-  assert.equal(folder, resolve(`.fleet-test-${schema}`));
+  assert.equal(folder, resolve(`.cars-test-${schema}`));
   rmSync(folder, { recursive: true, force: true });
 }
