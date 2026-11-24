@@ -66,7 +66,17 @@ Frontend เรียก backend ผ่าน Next.js API routes ตั้ง `B
 | Docker Compose | `docker compose run --rm --no-deps backend npm run seed` |
 | Node.js บนเครื่อง | `npm run seed` |
 
-seed สร้างบัญชี `admin@funch.example` ด้วย Role `ADMIN` และรหัสผ่านเริ่มต้น `FunchDemo2026!` สำหรับฐานข้อมูลพัฒนา ตั้ง `SEED_USER_PASSWORD` ก่อนสร้างบัญชีสมาชิกตัวอย่างครั้งแรกหากต้องการล็อกอินด้วยบัญชีอย่าง `somchai@funch.example` การรัน seed ซ้ำจะเก็บรหัสผ่านเดิมของบัญชีที่มีอยู่แล้ว ดูรายการข้อมูลตัวอย่างและคำสั่ง seed เฉพาะรถใน [คู่มือ seed](docs/seed.md)
+### บัญชีแอดมินตัวอย่างสำหรับเข้าระบบหลังบ้าน
+
+`npm run seed` สร้างบัญชีนี้เมื่อรันกับฐานข้อมูลพัฒนาใหม่
+
+| ข้อมูลเข้าสู่ระบบ | ค่า |
+| --- | --- |
+| อีเมล | `admin@funch.example` |
+| รหัสผ่านเริ่มต้น | `FunchDemo2026!` |
+| สิทธิ์ (Role) | `ADMIN` |
+
+`SEED_USER_PASSWORD` ใช้กำหนดรหัสผ่านของสมาชิกตัวอย่างที่สร้างใหม่ เช่น `somchai@funch.example` การรัน seed ซ้ำจะเก็บรหัสผ่านเดิมของบัญชีที่มีอยู่แล้ว ดูรายการข้อมูลตัวอย่างและคำสั่ง seed เฉพาะรถใน [คู่มือ seed](docs/seed.md)
 
 ## API
 
