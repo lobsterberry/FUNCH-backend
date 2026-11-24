@@ -12,6 +12,7 @@ import countryRoutes from "./routes/country.routes.js";
 import locationRoutes from "./routes/location.routes.js";
 import memberRoutes from "./routes/member.routes.js";
 import reportRoutes from "./routes/report.routes.js";
+import exampleRoutes from "./routes/example.routes.js";
 
 export function createApp() {
   const app = express();
@@ -62,6 +63,8 @@ export function createApp() {
   app.use("/api/admin/members", loadSession(config), memberRoutes);
   app.use("/api/admin/reports", loadSession(config), reportRoutes);
   app.use("/api/bookings", loadSession(config), bookingRoutes);
+  app.use("/api/example", loadSession(config), exampleRoutes);
+  app.use("/api/exampe", loadSession(config), exampleRoutes);
   app.use("/api/countries", countryRoutes);
   app.use("/api/locations", locationRoutes);
   app.get("/", (_req, res) => {
