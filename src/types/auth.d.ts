@@ -1,4 +1,4 @@
-import type { Role } from '@prisma/client';
+import type { Role } from '../lib/db-types.js';
 import '@auth/express';
 import '@auth/core/jwt';
 

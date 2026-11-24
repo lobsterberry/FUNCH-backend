@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Prisma } from '@prisma/client';
 import { bookingRow, buildReport, comparisonRange, dayBoundary, reportCsv, reportDay, reportQuery, reportSummary, type ReportBooking } from '../src/lib/booking-report.js';
 
 function booking(changes: Partial<ReportBooking> = {}): ReportBooking {
   return { id: 'one', bookingNumber: 'BOOK-1', createdAt: new Date('2026-10-31T17:00:00Z'),
     startDateTime: new Date('2026-11-02T03:00:00Z'), endDateTime: new Date('2026-11-03T03:00:00Z'),
-    totalPrice: new Prisma.Decimal('0.10'), currencyCode: 'THB', status: 'APPROVED', source: 'EXISTING_MEMBER',
+    totalPrice: '0.10', currencyCode: 'THB', status: 'APPROVED', source: 'EXISTING_MEMBER',
     timeZone: 'Asia/Tokyo', carId: 'car-1', carSnapshot: { brand: 'Original', model: 'Model', licensePlate: 'OLD-1' },
     calculatedDays: 1, calculatedHours: 0, pickupLocation: { nameTh: 'โตเกียว', country: { code: 'JP', nameTh: 'ญี่ปุ่น', flag: 'JP' } },
     car: { brand: 'Edited', model: 'Edited', licensePlate: 'NEW-1', country: 'TH', countryInfo: { code: 'TH', nameTh: 'ไทย', flag: 'TH' } }, ...changes };
@@ -14,11 +13,11 @@ function booking(changes: Partial<ReportBooking> = {}): ReportBooking {
 
 test('reports preserve decimal cents, separate currencies and exclude unconfirmed bookings from confirmed values', () => {
   const report = reportSummary([
-    booking(), booking({ status: 'COMPLETED', totalPrice: new Prisma.Decimal('0.20') }),
-    booking({ status: 'PENDING', totalPrice: new Prisma.Decimal('10') }),
-    booking({ status: 'CANCELLED', totalPrice: new Prisma.Decimal('20') }),
-    booking({ status: 'REJECTED', totalPrice: new Prisma.Decimal('30') }),
-    booking({ currencyCode: 'USD', totalPrice: new Prisma.Decimal('99.99') }),
+    booking(), booking({ status: 'COMPLETED', totalPrice: '0.20' }),
+    booking({ status: 'PENDING', totalPrice: '10' }),
+    booking({ status: 'CANCELLED', totalPrice: '20' }),
+    booking({ status: 'REJECTED', totalPrice: '30' }),
+    booking({ currencyCode: 'USD', totalPrice: '99.99' }),
   ]);
   assert.equal(report.total, 6); assert.equal(report.confirmedCount, 3); assert.equal(report.approvalRate, 50);
   assert.deepEqual(report.currencies[0], { currency: 'THB', total: '60.30', approved: '0.10', completed: '0.20', pending: '10.00', excluded: '50.00', confirmed: '0.30', average: '0.15' });

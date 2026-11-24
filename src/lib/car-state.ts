@@ -1,4 +1,4 @@
-import type { VehicleStatus } from "@prisma/client";
+import type { VehicleStatus } from "./db-types.js";
 
 type UnitState = {
   isAvailable: boolean;

@@ -1,15 +1,14 @@
 import { Router, Request, Response } from "express";
 import { isDeepStrictEqual } from "node:util";
-import prisma from "../lib/prisma.js";
+import { databasePool, queryOne, queryRows, required, withTransaction } from "../lib/db.js";
+import { insertRows, updateRows } from "../lib/db-write.js";
+import {
+  attachLegacyCar, findCar, hasReservations, listInventory, listPublicCars, lockCar,
+  lockCarInventory, publicCar, type Specification,
+} from "../lib/inventory-queries.js";
 import { requireAdmin, requireJson } from "../middleware/auth.js";
 import { carInputSchema } from "../lib/car-input.js";
-import {
-  attachLegacyCar,
-  effectiveCar,
-  inventoryInclude,
-  lockCarInventory,
-  modelData,
-} from "../lib/car-inventory.js";
+import { effectiveCar, modelData } from "../lib/car-inventory.js";
 import { carState, resolveOperationalStatus } from "../lib/car-state.js";
 import { formatCar } from "../lib/car-format.js";
 import carInventoryRoutes, {
@@ -23,15 +22,9 @@ router.use(carInventoryRoutes);
 // GET /api/cars/meta - ดึงข้อมูล category, fuel, features ที่มีอยู่ในฐานข้อมูล
 router.get("/meta", async (_req: Request, res: Response) => {
   try {
-    const cars = await prisma.car.findMany({
-      select: {
-        categories: true,
-        categoryLabel: true,
-        fuelType: true,
-        transmission: true,
-        options: true,
-      },
-    });
+    const cars = await queryRows<Pick<Specification, "categories" | "categoryLabel" | "fuelType" | "options">>(
+      databasePool(), 'SELECT categories::text[] AS categories, "categoryLabel", "fuelType", options FROM cars',
+    );
 
     const categorySet = new Set<string>();
     const fuelSet = new Set<string>();
@@ -66,34 +59,11 @@ router.get("/", async (req: Request, res: Response) => {
   try {
     const { country, isAvailable, category, locationId } = req.query;
 
-    const where: any = {};
-    if (country && country !== "all") {
-      where.country = String(country).toUpperCase();
-    }
-    if (isAvailable !== undefined) {
-      where.isAvailable = isAvailable === "true";
-    }
-    if (category && category !== "all") {
-      where.OR = [
-        { categories: { has: String(category).toUpperCase() as any } },
-        { categoryLabel: { contains: String(category), mode: "insensitive" } },
-      ];
-    }
-    if (locationId) {
-      where.locationId = String(locationId);
-    }
-
-    const cars = await prisma.car.findMany({
-      where,
-      include: {
-        location: true,
-        countryInfo: true,
-      },
-      orderBy: [
-        { isFeatured: "desc" },
-        { recommendationOrder: "asc" },
-        { createdAt: "desc" },
-      ],
+    const cars = await listPublicCars(databasePool(), {
+      country: country && country !== "all" ? String(country).toUpperCase() : null,
+      available: isAvailable === undefined ? null : isAvailable === "true",
+      category: category && category !== "all" ? String(category) : null,
+      locationId: locationId ? String(locationId) : null,
     });
 
     const data = cars.map(formatCar);
@@ -107,16 +77,7 @@ router.get("/", async (req: Request, res: Response) => {
 router.get("/admin", requireAdmin, async (_req, res, next) => {
   try {
     const now = new Date();
-    const cars = await prisma.car.findMany({
-      include: {
-        ...inventoryInclude,
-        bookings: {
-          where: { status: { in: ["PENDING", "APPROVED"] } },
-          select: { status: true, startDateTime: true, endDateTime: true },
-        },
-      },
-      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
-    });
+    const cars = await listInventory(databasePool());
     res.set("Cache-Control", "no-store").json({
       success: true,
       data: cars.map((car) => ({
@@ -139,13 +100,7 @@ router.get("/admin", requireAdmin, async (_req, res, next) => {
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const car = await prisma.car.findUnique({
-      where: { id },
-      include: {
-        location: true,
-        countryInfo: true,
-      },
-    });
+    const car = await publicCar(databasePool(), id);
 
     if (!car) {
       return res.status(404).json({ success: false, message: "Car not found" });
@@ -174,16 +129,13 @@ router.post("/", requireJson, requireAdmin, async (req, res, next) => {
         });
       return;
     }
-    const car = await prisma.$transaction(async (tx) => {
+    const car = await withTransaction(async (tx) => {
       await lockCarInventory(tx);
-      const created = await tx.car.create({
-        data: { ...data, operationalStatus: resolveOperationalStatus(data.isAvailable) },
-      });
-      await attachLegacyCar(tx, created);
-      return tx.car.findUniqueOrThrow({
-        where: { id: created.id },
-        include: inventoryInclude,
-      });
+      const [created] = await insertRows(tx, "cars", [
+        { ...data, operationalStatus: resolveOperationalStatus(data.isAvailable) },
+      ]);
+      await attachLegacyCar(tx, required(await findCar(tx, created.id)));
+      return required(await findCar(tx, created.id));
     });
 
     res.status(201).json({ success: true, data: formatCar(car) });
@@ -193,13 +145,15 @@ router.post("/", requireJson, requireAdmin, async (req, res, next) => {
 });
 
 async function validCarLocation(country: string, locationId: string | null) {
-  if (!(await prisma.country.findUnique({ where: { code: country } })))
-    return false;
-  if (!locationId) return true;
-  const location = await prisma.location.findUnique({
-    where: { id: locationId },
-  });
-  return location?.countryCode === country;
+  const row = await queryOne<{ code: string }>(
+    databasePool(),
+    `SELECT code FROM countries WHERE code::text = $1
+      AND ($2::text IS NULL OR EXISTS (
+        SELECT 1 FROM locations WHERE id = $2 AND "countryCode" = countries.code
+      ))`,
+    [country, locationId],
+  );
+  return row !== null;
 }
 
 router.patch("/:id", requireJson, requireAdmin, async (req, res, next) => {
@@ -218,77 +172,32 @@ router.patch("/:id", requireJson, requireAdmin, async (req, res, next) => {
         });
       return;
     }
-    const car = await prisma.$transaction(async (tx) => {
+    const car = await withTransaction(async (tx) => {
       await lockCarInventory(tx);
       // Share the reservation lock so a car cannot move while a booking is created.
-      await tx.$queryRaw`SELECT id FROM cars WHERE id = ${req.params.id} FOR UPDATE`;
-      const existing = await tx.car.findUnique({
-        where: { id: req.params.id },
-        include: {
-          carModelLocation: {
-            select: { carModel: { select: { imageUrl: true } } },
-          },
-        },
-      });
+      await lockCar(tx, req.params.id);
+      const existing = await findCar(tx, req.params.id);
       if (!existing) throw new Error("CAR_NOT_FOUND");
-      if (
-        existing.isAvailable &&
-        !data.isAvailable &&
-        (await tx.booking.findFirst({
-          where: {
-            carId: existing.id,
-            status: { in: ["PENDING", "APPROVED"] },
-          },
-        }))
-      )
-        throw new Error("HAS_ACTIVE_BOOKINGS");
       const changedSpecification = Object.entries(modelData(data)).some(
-        ([key, value]) => !isDeepStrictEqual((existing as any)[key], value),
+        ([key, value]) => !isDeepStrictEqual(existing[key as keyof Specification], value),
       );
-      if (
-        changedSpecification &&
-        (await tx.booking.findFirst({
-          where: {
-            carId: existing.id,
-            status: { in: ["PENDING", "APPROVED"] },
-          },
-        }))
-      )
+      if (((existing.isAvailable && !data.isAvailable) || changedSpecification) &&
+        await hasReservations(tx, existing.id)) {
         throw new Error("HAS_ACTIVE_BOOKINGS");
-      if (
-        existing.country !== data.country ||
-        existing.locationId !== data.locationId
-      ) {
-        const booking = await tx.booking.findFirst({
-          where: {
-            carId: existing.id,
-            status: { in: ["PENDING", "APPROVED"] },
-            endDateTime: { gt: new Date() },
-          },
-        });
-        if (booking) throw new Error("CAR_LOCATION_BOOKED");
       }
-      const updated = await tx.car.update({
-        where: { id: existing.id },
-        data: {
-          ...data,
-          operationalStatus: resolveOperationalStatus(
-            data.isAvailable,
-            undefined,
-            existing.operationalStatus,
-          ),
-          carModelLocationId: null,
-        },
-      });
+      if ((existing.country !== data.country || existing.locationId !== data.locationId) &&
+        await hasReservations(tx, existing.id, new Date())) {
+        throw new Error("CAR_LOCATION_BOOKED");
+      }
+      await updateRows(tx, "cars", {
+        ...data,
+        operationalStatus: resolveOperationalStatus(data.isAvailable, undefined, existing.operationalStatus),
+        carModelLocationId: null,
+      }, { id: existing.id });
       await attachLegacyCar(
-        tx,
-        updated,
-        existing.carModelLocation?.carModel.imageUrl,
+        tx, required(await findCar(tx, existing.id)), existing.carModelLocation?.carModel.imageUrl,
       );
-      return tx.car.findUniqueOrThrow({
-        where: { id: existing.id },
-        include: inventoryInclude,
-      });
+      return required(await findCar(tx, existing.id));
     });
     res.json({ success: true, data: formatCar(car) });
   } catch (error) {

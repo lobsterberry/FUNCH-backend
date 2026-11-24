@@ -1,19 +1,12 @@
 FROM node:20-alpine
 
-# Install OpenSSL and libc compat required by Prisma on Alpine Linux
-RUN apk add --no-cache openssl libc6-compat
-
 WORKDIR /app
 
 # Copy dependency definitions
 COPY package*.json ./
 
 # Install dependencies
-RUN npm install
-
-# Copy Prisma schema and generate client
-COPY prisma ./prisma/
-RUN npx prisma generate
+RUN npm ci
 
 # Copy project files
 COPY . .

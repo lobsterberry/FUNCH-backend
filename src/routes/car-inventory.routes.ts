@@ -1,18 +1,15 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
-import { Prisma } from "@prisma/client";
 import { z } from "zod";
-import prisma from "../lib/prisma.js";
+import { databasePool, queryOne, required, withTransaction } from "../lib/db.js";
+import { insertRows, updateRows } from "../lib/db-write.js";
+import {
+  carsByIds, carSchedule, catalogOffers, destinationOffers, findCar, findLocation, findModel, findOffer, hasReservations,
+  listInventory, listModels, lockCar, lockCarInventory, searchOffers,
+} from "../lib/inventory-queries.js";
 import { carInputSchema } from "../lib/car-input.js";
 import { requireAdmin, requireJson } from "../middleware/auth.js";
-import {
-  canSchedule,
-  inventoryInclude,
-  legacyValues,
-  lockCarInventory,
-  offerInclude,
-  reservedStatuses,
-} from "../lib/car-inventory.js";
+import { canSchedule, legacyValues, reservedStatuses } from "../lib/car-inventory.js";
 import { formatCar } from "../lib/car-format.js";
 import { calculateCarRentalPrice } from "../utils/pricing.js";
 import { carState, resolveOperationalStatus } from "../lib/car-state.js";
@@ -97,9 +94,10 @@ router.get("/search", async (req, res, next) => {
           new Date(v.endDateTime!) > new Date(v.startDateTime),
       )
       .parse(req.query);
+    const db = databasePool();
     if (
       input.locationId &&
-      !(await prisma.location.findUnique({ where: { id: input.locationId } }))
+      !(await findLocation(db, input.locationId))
     ) {
       res
         .status(400)
@@ -107,9 +105,7 @@ router.get("/search", async (req, res, next) => {
       return;
     }
     const dropoff = input.dropoffLocationId
-      ? await prisma.location.findUnique({
-          where: { id: input.dropoffLocationId },
-        })
+      ? await findLocation(db, input.dropoffLocationId)
       : null;
     if (input.dropoffLocationId && !dropoff) {
       res
@@ -117,38 +113,10 @@ router.get("/search", async (req, res, next) => {
         .json({ success: false, message: "Invalid dropoff location" });
       return;
     }
-    const offers = await prisma.carModelLocation.findMany({
-      where: {
-        isActive: true,
-        ...(input.locationId ? { locationId: input.locationId } : {}),
-        ...(input.country && input.country !== "all"
-          ? { location: { countryCode: input.country.toUpperCase() } }
-          : {}),
-      },
-      include: offerInclude,
-      orderBy: [
-        { carModel: { isFeatured: "desc" } },
-        { carModel: { recommendationOrder: "asc" } },
-        { id: "asc" },
-      ],
-    });
-    const cars = await prisma.car.findMany({
-      where: {
-        isAvailable: true,
-        operationalStatus: "AVAILABLE",
-        carModelLocationId: { not: null },
-      },
-      include: {
-        carModelLocation: true,
-        bookings: { where: { status: { in: [...reservedStatuses] } } },
-      },
-    });
-    const destinations = dropoff
-      ? await prisma.carModelLocation.findMany({
-          where: { locationId: dropoff.id, isActive: true },
-          select: { carModelId: true, providerName: true },
-        })
-      : [];
+    const offers = await searchOffers(db, input.locationId ?? null,
+      input.country && input.country !== "all" ? input.country.toUpperCase() : null);
+    const cars = await listInventory(db, true);
+    const destinations = dropoff ? await destinationOffers(db, dropoff.id) : [];
     const data = offers.flatMap((offer) => {
       if (dropoff && dropoff.countryCode !== offer.location.countryCode)
         return [];
@@ -233,28 +201,12 @@ router.get("/search", async (req, res, next) => {
 router.get("/catalog", requireAdmin, async (_req, res, next) => {
   try {
     const now = new Date();
-    const [models, offers, inventory] = await prisma.$transaction(
-      [
-        prisma.carModel.findMany({
-          orderBy: [{ brand: "asc" }, { model: "asc" }],
-        }),
-        prisma.carModelLocation.findMany({
-          include: { ...offerInclude, _count: { select: { cars: true } } },
-          orderBy: { createdAt: "asc" },
-        }),
-        prisma.car.findMany({
-          include: {
-            ...inventoryInclude,
-            bookings: {
-              where: { status: { in: [...reservedStatuses] } },
-              select: { status: true, startDateTime: true, endDateTime: true },
-            },
-          },
-          orderBy: [{ createdAt: "desc" }, { id: "asc" }],
-        }),
-      ],
-      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
-    );
+    const [models, offers, inventory] = await withTransaction(async (tx) => {
+      const models = await listModels(tx);
+      const offers = await catalogOffers(tx);
+      const inventory = await listInventory(tx);
+      return [models, offers, inventory] as const;
+    }, { repeatableRead: true });
     const units = inventory.map((car) => {
       const currentOffers = offers.filter(
         (offer) =>
@@ -371,9 +323,10 @@ router.get("/catalog", requireAdmin, async (_req, res, next) => {
 router.post("/models", requireJson, requireAdmin, async (req, res, next) => {
   try {
     const data = modelSchema.parse(req.body);
-    const model = await prisma.$transaction(async (tx) => {
+    const model = await withTransaction(async (tx) => {
       await lockCarInventory(tx);
-      return tx.carModel.create({ data });
+      const [created] = await insertRows(tx, "car_models", [data]);
+      return required(await findModel(tx, created.id));
     });
     res.status(201).json({ success: true, data: model });
   } catch (error) {
@@ -387,29 +340,22 @@ router.patch(
   async (req, res, next) => {
     try {
       const { imageUrl, ...data } = modelSchema.parse(req.body);
-      const model = await prisma.$transaction(async (tx) => {
+      const model = await withTransaction(async (tx) => {
         await lockCarInventory(tx);
-        if (!(await tx.carModel.findUnique({ where: { id: req.params.id } })))
+        if (!(await findModel(tx, req.params.id)))
           return null;
         // Booked specifications stay fixed until outstanding journeys are resolved.
         if (
-          await tx.booking.findFirst({
-            where: {
-              status: { in: [...reservedStatuses] },
-              car: { carModelLocation: { carModelId: req.params.id } },
-            },
-          })
+          await queryOne(tx, `SELECT b.id FROM bookings b
+            JOIN cars c ON c.id = b."carId"
+            JOIN car_model_locations o ON o.id = c."carModelLocationId"
+            WHERE o."carModelId" = $1 AND b.status = ANY($2::"BookingStatus"[]) LIMIT 1`,
+            [req.params.id, reservedStatuses])
         )
           throw new Error("HAS_ACTIVE_BOOKINGS");
-        const updated = await tx.carModel.update({
-          where: { id: req.params.id },
-          data: { ...data, imageUrl },
-        });
-        await tx.car.updateMany({
-          where: { carModelLocation: { carModelId: updated.id } },
-          data,
-        });
-        return updated;
+        await updateRows(tx, "car_models", { ...data, imageUrl }, { id: req.params.id });
+        await updateRows(tx, "cars", data, { modelId: req.params.id });
+        return required(await findModel(tx, req.params.id));
       });
       if (!model) {
         res.status(404).json({ success: false, message: "Model not found" });
@@ -425,14 +371,15 @@ router.patch(
 router.post("/offers", requireJson, requireAdmin, async (req, res, next) => {
   try {
     const data = offerSchema.parse(req.body);
-    const offer = await prisma.$transaction(async (tx) => {
+    const offer = await withTransaction(async (tx) => {
       await lockCarInventory(tx);
       if (
-        !(await tx.carModel.findUnique({ where: { id: data.carModelId } })) ||
-        !(await tx.location.findUnique({ where: { id: data.locationId } }))
+        !(await findModel(tx, data.carModelId)) ||
+        !(await findLocation(tx, data.locationId))
       )
         return null;
-      return tx.carModelLocation.create({ data, include: offerInclude });
+      const [created] = await insertRows(tx, "car_model_locations", [data]);
+      return required(await findOffer(tx, created.id));
     });
     if (!offer) {
       res
@@ -452,11 +399,9 @@ router.patch(
   async (req, res, next) => {
     try {
       const data = offerSchema.parse(req.body);
-      const offer = await prisma.$transaction(async (tx) => {
+      const offer = await withTransaction(async (tx) => {
         await lockCarInventory(tx);
-        const old = await tx.carModelLocation.findUnique({
-          where: { id: req.params.id },
-        });
+        const old = await findOffer(tx, req.params.id);
         if (!old) return null;
         // Identity is immutable: create a new branch offer, then transfer individual cars.
         if (
@@ -466,18 +411,12 @@ router.patch(
         ) {
           throw new Error("OFFER_IDENTITY");
         }
-        const updated = await tx.carModelLocation.update({
-          where: { id: old.id },
-          data,
-          include: offerInclude,
-        });
-        await tx.car.updateMany({
-          where: { carModelLocationId: old.id },
-          data: {
-            hourlyRate: updated.hourlyRate,
-            dailyRate: updated.dailyRate,
-          },
-        });
+        await updateRows(tx, "car_model_locations", data, { id: old.id });
+        const updated = required(await findOffer(tx, old.id));
+        await updateRows(tx, "cars", {
+          hourlyRate: updated.hourlyRate,
+          dailyRate: updated.dailyRate,
+        }, { offerId: old.id });
         return updated;
       });
       if (!offer) {
@@ -495,38 +434,26 @@ router.patch(
 router.post("/bulk", requireJson, requireAdmin, async (req, res, next) => {
   try {
     const input = bulkInventorySchema.parse(req.body);
-    const cars = await prisma.$transaction(async (tx) => {
+    const cars = await withTransaction(async (tx) => {
       await lockCarInventory(tx);
-      const offer = await tx.carModelLocation.findUnique({
-        where: { id: input.carModelLocationId },
-        include: offerInclude,
-      });
+      const offer = await findOffer(tx, input.carModelLocationId);
       if (!offer || input.year !== offer.carModel.year) return null;
-      const rows = input.licensePlates.map(
-        (licensePlate) =>
-          ({
-            ...legacyValues(offer),
-            id: randomUUID(),
-            carModelLocationId: offer.id,
-            locationId: offer.locationId,
-            year: input.year,
-            licensePlate,
-            isAvailable: input.isAvailable,
-            operationalStatus: resolveOperationalStatus(
-              input.isAvailable,
-              input.operationalStatus,
-            ),
-            exteriorColor: input.exteriorColor,
-            odometerKm: input.odometerKm,
-          }) as Prisma.CarCreateManyInput,
-      );
-      await tx.car.createMany({ data: rows });
-      const saved = await tx.car.findMany({
-        where: { id: { in: rows.map((row) => row.id!) } },
-        include: inventoryInclude,
-      });
+      const rows = input.licensePlates.map((licensePlate) => ({
+        ...legacyValues(offer),
+        id: randomUUID(),
+        carModelLocationId: offer.id,
+        locationId: offer.locationId,
+        year: input.year,
+        licensePlate,
+        isAvailable: input.isAvailable,
+        operationalStatus: resolveOperationalStatus(input.isAvailable, input.operationalStatus),
+        exteriorColor: input.exteriorColor,
+        odometerKm: input.odometerKm,
+      }));
+      await insertRows(tx, "cars", rows);
+      const saved = await carsByIds(tx, rows.map(({ id }) => id));
       const byId = new Map(saved.map((car) => [car.id, car]));
-      return rows.map((row) => byId.get(row.id!)!);
+      return rows.map(({ id }) => required(byId.get(id) ?? null));
     });
     if (!cars) {
       res.status(400).json({ success: false, message: "Invalid offer" });
@@ -548,25 +475,17 @@ export async function createInventoryCar(
   try {
     const input = inventorySchema.refine(validStatus).parse(req.body);
     const { transfer: _transfer, transferNote: _note, ...values } = input;
-    const car = await prisma.$transaction(async (tx) => {
+    const car = await withTransaction(async (tx) => {
       await lockCarInventory(tx);
-      const offer = await tx.carModelLocation.findUnique({
-        where: { id: input.carModelLocationId },
-        include: offerInclude,
-      });
+      const offer = await findOffer(tx, input.carModelLocationId);
       if (!offer || input.year !== offer.carModel.year) return null;
-      return tx.car.create({
-        data: {
-          ...legacyValues(offer),
-          ...values,
-          operationalStatus: resolveOperationalStatus(
-            input.isAvailable,
-            input.operationalStatus,
-          ),
-          locationId: offer.locationId,
-        } as Prisma.CarUncheckedCreateInput,
-        include: inventoryInclude,
-      });
+      const [created] = await insertRows(tx, "cars", [{
+        ...legacyValues(offer),
+        ...values,
+        operationalStatus: resolveOperationalStatus(input.isAvailable, input.operationalStatus),
+        locationId: offer.locationId,
+      }]);
+      return required(await findCar(tx, created.id));
     });
     if (!car) {
       res.status(400).json({ success: false, message: "Invalid offer" });
@@ -586,18 +505,12 @@ export async function updateInventoryCar(
   try {
     const input = inventorySchema.refine(validStatus).parse(req.body);
     const { transfer, transferNote, ...values } = input;
-    const car = await prisma.$transaction(async (tx) => {
+    const car = await withTransaction(async (tx) => {
       await lockCarInventory(tx);
-      await tx.$queryRaw`SELECT id FROM cars WHERE id = ${req.params.id} FOR UPDATE`;
-      const old = await tx.car.findUnique({
-        where: { id: req.params.id },
-        include: { carModelLocation: true },
-      });
+      await lockCar(tx, req.params.id);
+      const old = await findCar(tx, req.params.id);
       if (!old) return null;
-      const offer = await tx.carModelLocation.findUnique({
-        where: { id: input.carModelLocationId },
-        include: offerInclude,
-      });
+      const offer = await findOffer(tx, input.carModelLocationId);
       if (!offer || input.year !== offer.carModel.year)
         throw new Error("INVALID_OFFER");
       const moving = old.carModelLocationId !== offer.id || transfer === true;
@@ -609,9 +522,7 @@ export async function updateInventoryCar(
       if (
         old.isAvailable &&
         !input.isAvailable &&
-        (await tx.booking.findFirst({
-          where: { carId: old.id, status: { in: [...reservedStatuses] } },
-        }))
+        (await hasReservations(tx, old.id))
       ) {
         throw new Error("HAS_ACTIVE_BOOKINGS");
       }
@@ -626,33 +537,26 @@ export async function updateInventoryCar(
         )
           throw new Error("INVALID_TRANSFER");
         if (
-          await tx.booking.findFirst({
-            where: { carId: old.id, status: { in: [...reservedStatuses] } },
-          })
+          await hasReservations(tx, old.id)
         )
           throw new Error("HAS_ACTIVE_BOOKINGS");
         if (old.locationId !== offer.locationId)
-          await tx.carMovement.create({
-            data: {
-              carId: old.id,
-              fromLocationId: old.locationId,
-              toLocationId: offer.locationId,
-              reason: "ADMIN_TRANSFER",
-              note: transferNote || null,
-            },
-          });
+          await insertRows(tx, "car_movements", [{
+            carId: old.id,
+            fromLocationId: old.locationId,
+            toLocationId: offer.locationId,
+            reason: "ADMIN_TRANSFER",
+            note: transferNote || null,
+          }]);
       }
-      return tx.car.update({
-        where: { id: old.id },
-        data: {
-          ...legacyValues(offer),
-          ...values,
-          operationalStatus,
-          locationId: moving ? offer.locationId : old.locationId,
-          ...(moving ? { availableFrom: null } : {}),
-        },
-        include: inventoryInclude,
-      });
+      await updateRows(tx, "cars", {
+        ...legacyValues(offer),
+        ...values,
+        operationalStatus,
+        locationId: moving ? offer.locationId : old.locationId,
+        ...(moving ? { availableFrom: null } : {}),
+      }, { id: old.id });
+      return required(await findCar(tx, old.id));
     });
     if (!car) {
       res.status(404).json({ success: false, message: "Car not found" });
@@ -666,29 +570,7 @@ export async function updateInventoryCar(
 
 router.get("/:id/schedule", requireAdmin, async (req, res, next) => {
   try {
-    const car = await prisma.car.findUnique({
-      where: { id: req.params.id },
-      include: {
-        location: true,
-        movements: {
-          orderBy: { occurredAt: "desc" },
-          include: { fromLocation: true, toLocation: true },
-        },
-        bookings: {
-          orderBy: { startDateTime: "asc" },
-          select: {
-            id: true,
-            bookingNumber: true,
-            status: true,
-            startDateTime: true,
-            endDateTime: true,
-            pickupLocation: true,
-            dropoffLocation: true,
-            turnaroundMinutes: true,
-          },
-        },
-      },
-    });
+    const car = await withTransaction((tx) => carSchedule(tx, req.params.id), { repeatableRead: true });
     if (!car) {
       res.status(404).json({ success: false, message: "Car not found" });
       return;

@@ -1,21 +1,15 @@
 import { Router } from "express";
-import { Prisma } from "@prisma/client";
 import { z } from "zod";
-import prisma from "../lib/prisma.js";
+import { isUniqueViolation, queryOne, queryRows, required, withTransaction } from "../lib/db.js";
+import { createUser, memberColumns, type Member } from "../lib/users.js";
 import {
   emailSchema,
   passwordSchema,
-  publicUserSelect,
 } from "../lib/registration.js";
 import { requireAdmin, requireJson } from "../middleware/auth.js";
 import { hashPassword } from "../utils/password.js";
 
 const router = Router();
-const memberSelect = {
-  ...publicUserSelect,
-  isActive: true,
-  updatedAt: true,
-} satisfies Prisma.UserSelect;
 const fields = z
   .object({
     name: z.string().trim().min(1).max(100),
@@ -48,62 +42,35 @@ router.use((_req, res, next) => {
 router.get("/", async (req, res, next) => {
   try {
     const input = listSchema.parse(req.query);
-    const where: Prisma.UserWhereInput = {
-      ...(input.role === "all" ? {} : { role: input.role }),
-      ...(input.status === "all"
-        ? {}
-        : { isActive: input.status === "active" }),
-      ...(input.search
-        ? {
-            OR: ["name", "email", "phoneNumber"].map((field) => ({
-              [field]: { contains: input.search, mode: "insensitive" },
-            })),
-          }
-        : {}),
-    };
-    const result = await prisma.$transaction(
-      async (tx) => {
-        const total = await tx.user.count({ where });
-        const totalPages = Math.max(1, Math.ceil(total / input.pageSize));
-        const page = Math.min(input.page, totalPages);
-        const users = await tx.user.findMany({
-          where,
-          select: { ...memberSelect, _count: { select: { bookings: true } } },
-          orderBy: [{ createdAt: "desc" }, { id: "asc" }],
-          skip: (page - 1) * input.pageSize,
-          take: input.pageSize,
-        });
-        const spending = await tx.booking.groupBy({
-          by: ["userId"],
-          where: {
-            userId: { in: users.map((user) => user.id) },
-            status: { in: ["APPROVED", "COMPLETED"] },
-          },
-          _sum: { totalPrice: true },
-        });
-        const amounts = new Map(
-          spending.map((item) => [
-            item.userId,
-            item._sum.totalPrice?.toString() ?? "0",
-          ]),
-        );
-        const [all, active, admins] = await Promise.all([
-          tx.user.count(),
-          tx.user.count({ where: { isActive: true } }),
-          tx.user.count({ where: { role: "ADMIN" } }),
-        ]);
-        return {
-          data: users.map(({ _count, ...user }) => ({
-            ...user,
-            bookingCount: _count.bookings,
-            totalSpend: amounts.get(user.id) ?? "0",
-          })),
-          pagination: { page, pageSize: input.pageSize, total, totalPages },
-          summary: { total: all, active, suspended: all - active, admins },
-        };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
-    );
+    const result = await withTransaction(async (tx) => {
+      const filters = `FROM users u
+        WHERE ($1::"Role" IS NULL OR u.role = $1) AND ($2::boolean IS NULL OR u."isActive" = $2)
+          AND ($3::text IS NULL OR u.name ILIKE $3 OR u.email ILIKE $3 OR u."phoneNumber" ILIKE $3)`;
+      const values = [
+        input.role === "all" ? null : input.role,
+        input.status === "all" ? null : input.status === "active",
+        input.search ? "%" + input.search + "%" : null,
+      ];
+      const { total } = required(await queryOne<{ total: number }>(
+        tx, "SELECT count(*)::integer AS total " + filters, values,
+      ));
+      const totalPages = Math.max(1, Math.ceil(total / input.pageSize));
+      const page = Math.min(input.page, totalPages);
+      const users = await queryRows<Member & { bookingCount: number; totalSpend: string }>(tx, `
+        SELECT ${memberColumns},
+          (SELECT count(*)::integer FROM bookings b WHERE b."userId" = u.id) AS "bookingCount",
+          COALESCE((SELECT sum(b."totalPrice") FROM bookings b WHERE b."userId" = u.id
+            AND b.status IN ('APPROVED', 'COMPLETED')), 0) AS "totalSpend"
+        ${filters} ORDER BY u."createdAt" DESC, u.id LIMIT $4 OFFSET $5`,
+        [...values, input.pageSize, (page - 1) * input.pageSize]);
+      const summary = required(await queryOne<{ total: number; active: number; suspended: number; admins: number }>(
+        tx, `SELECT count(*)::integer AS total,
+          (count(*) FILTER (WHERE "isActive"))::integer AS active,
+          (count(*) FILTER (WHERE NOT "isActive"))::integer AS suspended,
+          (count(*) FILTER (WHERE role = 'ADMIN'))::integer AS admins FROM users`,
+      ));
+      return { data: users, pagination: { page, pageSize: input.pageSize, total, totalPages }, summary };
+    }, { repeatableRead: true });
     res.json({ success: true, ...result });
   } catch (error) {
     next(error);
@@ -113,20 +80,12 @@ router.get("/", async (req, res, next) => {
 router.post("/", requireJson, async (req, res, next) => {
   try {
     const { password, ...input } = createSchema.parse(req.body);
-    const user = await prisma.user.create({
-      data: {
-        ...input,
-        phoneNumber: input.phoneNumber || null,
-        password: await hashPassword(password),
-      },
-      select: memberSelect,
+    const user = await createUser({
+      ...input, phoneNumber: input.phoneNumber || null, password: await hashPassword(password),
     });
     res.status(201).json({ success: true, data: user });
   } catch (error) {
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2002"
-    ) {
+    if (isUniqueViolation(error, "users_email_key")) {
       res
         .status(409)
         .json({
@@ -142,53 +101,34 @@ router.post("/", requireJson, async (req, res, next) => {
 router.get("/:id", async (req, res, next) => {
   try {
     const input = pagination.parse(req.query);
-    const result = await prisma.$transaction(
-      async (tx) => {
-        const user = await tx.user.findUnique({
-          where: { id: req.params.id },
-          select: memberSelect,
-        });
-        if (!user) return null;
-        const total = await tx.booking.count({ where: { userId: user.id } });
-        const totalPages = Math.max(1, Math.ceil(total / input.pageSize));
-        const page = Math.min(input.page, totalPages);
-        const bookings = await tx.booking.findMany({
-          where: { userId: user.id },
-          orderBy: [{ createdAt: "desc" }, { id: "asc" }],
-          skip: (page - 1) * input.pageSize,
-          take: input.pageSize,
-          select: {
-            id: true,
-            bookingNumber: true,
-            startDateTime: true,
-            endDateTime: true,
-            totalPrice: true,
-            currencyCode: true,
-            timeZone: true,
-            status: true,
-            source: true,
-            driverName: true,
-            internationalDrivingPermit: true,
-            carSnapshot: true,
-            car: { select: { brand: true, model: true, licensePlate: true } },
-            pickupLocation: { select: { name: true, nameTh: true } },
-            dropoffLocation: { select: { name: true, nameTh: true } },
-          },
-        });
-        const spend = await tx.booking.aggregate({
-          where: { userId: user.id, status: { in: ["APPROVED", "COMPLETED"] } },
-          _sum: { totalPrice: true },
-        });
-        return {
-          ...user,
-          bookingCount: total,
-          totalSpend: spend._sum.totalPrice?.toString() ?? "0",
-          bookings,
-          pagination: { page, pageSize: input.pageSize, total, totalPages },
-        };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
-    );
+    const result = await withTransaction(async (tx) => {
+      const user = await queryOne<Member>(tx, "SELECT " + memberColumns + " FROM users WHERE id = $1", [req.params.id]);
+      if (!user) return null;
+      const { total, totalSpend } = required(await queryOne<{ total: number; totalSpend: string }>(tx, `
+        SELECT count(*)::integer AS total,
+          COALESCE(sum("totalPrice") FILTER (WHERE status IN ('APPROVED', 'COMPLETED')), 0) AS "totalSpend"
+        FROM bookings WHERE "userId" = $1`, [user.id]));
+      const totalPages = Math.max(1, Math.ceil(total / input.pageSize));
+      const page = Math.min(input.page, totalPages);
+      const bookings = await queryRows(tx, `
+        SELECT b.id, b."bookingNumber", b."startDateTime", b."endDateTime", b."totalPrice", b."currencyCode",
+          b."timeZone", b.status, b.source, b."driverName", b."internationalDrivingPermit", b."carSnapshot",
+          jsonb_build_object('brand', c.brand, 'model', c.model, 'licensePlate', c."licensePlate") AS car,
+          CASE WHEN p.id IS NOT NULL THEN jsonb_build_object('name', p.name, 'nameTh', p."nameTh") END AS "pickupLocation",
+          CASE WHEN d.id IS NOT NULL THEN jsonb_build_object('name', d.name, 'nameTh', d."nameTh") END AS "dropoffLocation"
+        FROM bookings b JOIN cars c ON c.id = b."carId"
+        LEFT JOIN locations p ON p.id = b."pickupLocationId"
+        LEFT JOIN locations d ON d.id = b."dropoffLocationId"
+        WHERE b."userId" = $1 ORDER BY b."createdAt" DESC, b.id LIMIT $2 OFFSET $3`,
+        [user.id, input.pageSize, (page - 1) * input.pageSize]);
+      return {
+        ...user,
+        bookingCount: total,
+        totalSpend,
+        bookings,
+        pagination: { page, pageSize: input.pageSize, total, totalPages },
+      };
+    }, { repeatableRead: true });
     if (!result) {
       res
         .status(404)
@@ -217,35 +157,29 @@ router.patch("/:id", requireJson, async (req, res, next) => {
         });
       return;
     }
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await withTransaction(async (tx) => {
       // Serialize permission changes and recheck the actor after waiting for other admins.
-      await tx.$queryRaw`SELECT id FROM users WHERE role = 'ADMIN' AND "isActive" = true ORDER BY id FOR UPDATE`;
-      const actor = await tx.user.findUnique({
-        where: { id: actorId },
-        select: { role: true, isActive: true },
-      });
+      await tx.query(`SELECT id FROM users WHERE role = 'ADMIN' AND "isActive" ORDER BY id FOR UPDATE`);
+      const actor = await queryOne<Pick<Member, "role" | "isActive">>(
+        tx, 'SELECT role, "isActive" FROM users WHERE id = $1', [actorId],
+      );
       if (actor?.role !== "ADMIN" || !actor.isActive)
         return { status: 403, message: "บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ" };
-      const current = await tx.user.findUnique({
-        where: { id: req.params.id },
-        select: memberSelect,
-      });
+      const current = await queryOne<Member>(
+        tx, "SELECT " + memberColumns + " FROM users WHERE id = $1 FOR UPDATE", [req.params.id],
+      );
       if (!current)
         return { status: 404, message: "ไม่พบสมาชิก กรุณาโหลดข้อมูลใหม่" };
       const revoke =
         (input.isActive === false && current.isActive) ||
         (input.role !== undefined && input.role !== current.role);
-      const data = await tx.user.update({
-        where: { id: current.id },
-        data: {
-          ...input,
-          ...(input.phoneNumber !== undefined
-            ? { phoneNumber: input.phoneNumber || null }
-            : {}),
-          ...(revoke ? { sessionVersion: { increment: 1 } } : {}),
-        },
-        select: memberSelect,
-      });
+      const phoneNumber = input.phoneNumber === undefined ? current.phoneNumber : input.phoneNumber || null;
+      const data = required(await queryOne<Member>(tx, `
+        UPDATE users SET name = $2, email = $3, "phoneNumber" = $4, role = $5, "isActive" = $6,
+          "sessionVersion" = "sessionVersion" + $7, "updatedAt" = $8
+        WHERE id = $1 RETURNING ${memberColumns}`,
+        [current.id, input.name ?? current.name, input.email ?? current.email, phoneNumber,
+          input.role ?? current.role, input.isActive ?? current.isActive, revoke ? 1 : 0, new Date()]));
       return { status: 200, data };
     });
     res
@@ -256,10 +190,7 @@ router.patch("/:id", requireJson, async (req, res, next) => {
           : { success: false, message: result.message },
       );
   } catch (error) {
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2002"
-    ) {
+    if (isUniqueViolation(error, "users_email_key")) {
       res
         .status(409)
         .json({

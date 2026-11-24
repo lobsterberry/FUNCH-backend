@@ -1,4 +1,4 @@
-# Prisma และข้อมูลตัวอย่าง FUNCH
+# Schema และข้อมูลตัวอย่าง FUNCH
 
 ข้อมูลตัวอย่างอ้างอิง [Assignment.md](../Assignment.md) และ wireframes ใน `docs/wireframes` ของ repository `FUNCH-frontend`
 
@@ -10,33 +10,35 @@
 - เมื่อรัน backend ใน Docker Compose ให้ตั้ง `DOCKER_DATABASE_URL` ให้ชี้ไปที่ `postgres:5432` ค่าผู้ใช้ รหัสผ่าน และชื่อฐานข้อมูลใน URL ต้องตรงกับ `POSTGRES_USER`, `POSTGRES_PASSWORD` และ `POSTGRES_DB` ให้ URL-encode อักขระพิเศษในรหัสผ่านเมื่อใส่ใน URL
 - ตั้ง `SEED_USER_PASSWORD` อย่างน้อย 12 ตัวอักษรก่อนรัน seed ทั้งชุด ดูค่าที่ Docker Compose ต้องใช้เพิ่มเติมได้จาก [คู่มือ backend](../README.md)
 
-### รัน Prisma บนเครื่อง
+### เตรียมฐานข้อมูลบนเครื่อง
 
-สำหรับฐานข้อมูลพัฒนาที่สร้างใหม่ ให้ใช้ `prisma:push` สร้างตารางจาก [`schema.prisma`](schema.prisma) แล้วรัน seed หากมี PostgreSQL ทำงานอยู่แล้ว ให้ข้ามคำสั่ง `docker compose up`
+สำหรับฐานข้อมูลพัฒนาที่สร้างใหม่ ให้ใช้ `db:migrate` สร้างตารางจาก [SQL migrations](../db/migrations/) แล้วรัน seed หากมี PostgreSQL ทำงานอยู่แล้ว ให้ข้ามคำสั่ง `docker compose up`
 
 ```bash
 npm ci
 docker compose up -d --wait postgres
-npm run prisma:push
-npm run prisma:seed
+npm run db:migrate
+npm run seed
 ```
 
-### รัน Prisma ใน Docker Compose
+### เตรียมฐานข้อมูลใน Docker Compose
 
-สำหรับฐานข้อมูล Docker ที่สร้างใหม่ ให้เตรียมตารางก่อน แล้วเปิด backend และรัน seed หาก backend ทำงานอยู่และฐานข้อมูลมีตารางพร้อมแล้ว ให้รันเฉพาะคำสั่งสุดท้าย
+สำหรับฐานข้อมูล Docker ที่สร้างใหม่ ให้เตรียมตารางก่อน แล้วรัน seed ผ่าน `pg`
 
 ```bash
-docker compose run --rm --build backend npm run prisma:push
+docker compose run --rm --build backend npm run db:migrate
+docker compose run --rm backend npm run seed
 docker compose up -d backend
-docker compose exec backend npm run prisma:seed
 ```
 
 ## รันและตรวจสอบ seed
 
-- `npm run prisma:seed` รัน [`seed.ts`](seed.ts) ใน transaction เพื่อสร้างหรืออัปเดตประเทศ สาขา บัญชี รถต้นแบบ และรายการจองตัวอย่าง แล้วเพิ่มรถตามแผนใน [`car-seed.ts`](car-seed.ts) การรันซ้ำอัปเดตฟิลด์ของข้อมูลต้นแบบตามชุด seed คง password hash เดิม และเติมสีรถ เลขตัวถัง (VIN) หรือเลขไมล์เฉพาะค่าที่ยังว่างของรถตัวอย่าง
-- `npm run prisma:seed:check` ตรวจข้อมูลใน [`seed-data.ts`](seed-data.ts) และพิมพ์ตัวอย่างการคิดราคาโดยไม่เชื่อมต่อฐานข้อมูล หากยังไม่ได้สร้าง Prisma Client ให้รัน `npm run prisma:generate` ก่อน
-- `npm run prisma:seed:cars -- --dry-run` แสดงแผนเพิ่มรถ 106 คันจากรถต้นแบบ 28 คัน ครอบคลุม 13 สาขา ตัวเลขเป็นขนาดของแผน ตัวคำสั่งไม่อ่านข้อมูลในฐานข้อมูล
-- `npm run prisma:seed:cars` ใช้เมื่อมีรถต้นแบบที่เชื่อมกับข้อเสนอรายสาขาแล้ว เพิ่มเฉพาะรถและข้อเสนอที่ยังขาดตาม ID คงที่ โดยคงข้อมูลรถและรายการจองเดิม
+คำสั่ง migration และ seed ใช้ `pg` และอ่าน `DATABASE_URL`
+
+- `npm run seed` รัน [`seed.ts`](../scripts/seed/seed.ts) ใน transaction เพื่อสร้างหรืออัปเดตประเทศ สาขา บัญชี รถต้นแบบ และรายการจองตัวอย่าง แล้วเพิ่มรถตามแผนใน [`car-seed.ts`](../scripts/seed/car-seed.ts) การรันซ้ำอัปเดตฟิลด์ของข้อมูลต้นแบบตามชุด seed คง password hash เดิม และเติมสีรถ เลขตัวถัง (VIN) หรือเลขไมล์เฉพาะค่าที่ยังว่างของรถตัวอย่าง
+- `npm run seed:check` ตรวจข้อมูลใน [`seed-data.ts`](../scripts/seed/seed-data.ts) และพิมพ์ตัวอย่างการคิดราคาโดยไม่เชื่อมต่อฐานข้อมูล
+- `npm run seed:cars -- --dry-run` แสดงแผนเพิ่มรถ 106 คันจากรถต้นแบบ 28 คัน ครอบคลุม 13 สาขา ตัวเลขเป็นขนาดของแผน ตัวคำสั่งไม่อ่านข้อมูลในฐานข้อมูล
+- `npm run seed:cars` ใช้เมื่อมีรถต้นแบบที่เชื่อมกับข้อเสนอรายสาขาแล้ว เพิ่มเฉพาะรถและข้อเสนอที่ยังขาดตาม ID คงที่ โดยคงข้อมูลรถและรายการจองเดิม
 
 ## ข้อมูลตัวอย่าง
 
@@ -67,25 +69,23 @@ docker compose exec backend npm run prisma:seed
 
 ราคาตัวอย่างใช้ THB โดย `Country.currencyCode` เก็บสกุลเงินท้องถิ่นเป็นข้อมูลอ้างอิง API คำนวณราคาตามเขตเวลาของสาขารับรถ และจำกัดยอดค่าเช่าส่วนที่คิดรายชั่วโมงไว้ที่ราคาหนึ่งวัน ส่วน `pricingExamples` เป็นผลที่คาดไว้ตามโจทย์ เช่น Harrier เช่า 8 ชั่วโมงมีราคาในชุดตัวอย่าง 2,240 บาท และ API คิด 2,200 บาทตามเพดานรายวัน ดู [ตัวคำนวณราคา](../src/utils/pricing.ts) และ [ชุดทดสอบราคา](../tests/pricing.test.ts)
 
-## ตัวอย่างการกรองข้อเสนอด้วย Prisma
+## ตัวอย่างการกรองข้อเสนอด้วย pg
 
 ตัวอย่างนี้ค้นข้อเสนอที่เปิดบริการในฮาเนดะสำหรับรถ SUV หรือ SEDAN เกียร์อัตโนมัติ พวงมาลัยขวา และมีอุปกรณ์ทั้งสองรายการ หากต้องการจำนวนรถว่างตามช่วงเวลา ให้ใช้ `GET /api/cars/search`
 
 ```ts
-const offers = await prisma.carModelLocation.findMany({
-  where: {
-    locationId: 'seed-location-haneda',
-    isActive: true,
-    dailyRate: { gte: 1000, lte: 4000 },
-    carModel: {
-      categories: { hasSome: ['SUV', 'SEDAN'] },
-      transmissionType: 'AUTOMATIC',
-      steeringSide: 'RHD',
-      featureCodes: { hasEvery: ['GPS_EN', 'CARPLAY_ANDROID_AUTO'] },
-    },
-  },
-  include: { carModel: true, location: true },
-  orderBy: [{ carModel: { recommendationOrder: 'asc' } }, { id: 'asc' }],
-  take: 4,
-});
+const { rows: offers } = await databasePool().query(
+  `SELECT o.id, o."carModelId", o."locationId", o."dailyRate", m.brand, m.model
+   FROM car_model_locations o
+   JOIN car_models m ON m.id = o."carModelId"
+   WHERE o."locationId" = $1 AND o."isActive"
+     AND o."dailyRate" BETWEEN $2 AND $3
+     AND m.categories && $4::"CarCategory"[]
+     AND m."transmissionType" = $5 AND m."steeringSide" = $6
+     AND m."featureCodes" @> $7::text[]
+   ORDER BY m."recommendationOrder", o.id
+   LIMIT $8`,
+  ['seed-location-haneda', 1000, 4000, ['SUV', 'SEDAN'], 'AUTOMATIC',
+    'RHD', ['GPS_EN', 'CARPLAY_ANDROID_AUTO'], 4],
+);
 ```

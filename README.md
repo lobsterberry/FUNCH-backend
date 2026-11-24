@@ -1,6 +1,6 @@
 # FUNCH Backend
 
-REST API สำหรับระบบเช่ารถ FUNCH ใช้ Express, TypeScript, Prisma ORM, PostgreSQL และ Auth.js รองรับการค้นหารถตามสาขา คำนวณราคา จองรถ ดูประวัติการจอง และจัดการรถ การจอง สมาชิก และรายงานสำหรับผู้ดูแลระบบ
+REST API สำหรับระบบเช่ารถ FUNCH ใช้ Express, TypeScript, PostgreSQL ผ่าน `pg` และ Auth.js รองรับการค้นหารถตามสาขา คำนวณราคา จองรถ ดูประวัติการจอง และจัดการรถ การจอง สมาชิก และรายงานสำหรับผู้ดูแลระบบ
 
 รันคำสั่งในคู่มือนี้จากโฟลเดอร์ `backend` ส่วน Next.js frontend อยู่ในโฟลเดอร์ `frontend` ข้างกันใน workspace นี้ และตั้งค่าแยกตาม [คู่มือ frontend](../frontend/README.md)
 
@@ -13,7 +13,7 @@ REST API สำหรับระบบเช่ารถ FUNCH ใช้ Expres
 | `AUTH_SECRET` | ค่าสุ่มอย่างน้อย 32 ตัวอักษร สร้างได้ด้วย `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"` |
 | `AUTH_URL` | URL ภายนอกของ backend ค่าเริ่มต้น `http://localhost:5000` ตั้งให้ตรงกับพอร์ตที่เปิด และใช้ `https://` เมื่อให้บริการผ่าน HTTPS เพื่อเปิดใช้ Secure cookie |
 | `FRONTEND_URL` | Origin ของ frontend ที่อนุญาตให้เรียก API ค่าเริ่มต้น `http://localhost:3000` |
-| `DATABASE_URL` | ใช้เมื่อรัน Node.js หรือ Prisma บนเครื่อง เช่น `postgresql://postgres:ENCODED_PASSWORD@localhost:5432/funch_db?schema=public` หากใช้ Compose ให้ใช้พอร์ตที่ตั้งใน `POSTGRES_PORT` |
+| `DATABASE_URL` | ใช้เมื่อรัน backend, migration หรือ seed บนเครื่อง เช่น `postgresql://postgres:ENCODED_PASSWORD@localhost:5432/funch_db?schema=public` หากใช้ Compose ให้ใช้พอร์ตที่ตั้งใน `POSTGRES_PORT` |
 | `DOCKER_DATABASE_URL` | ใช้เมื่อรัน backend ใน Compose เช่น `postgresql://postgres:ENCODED_PASSWORD@postgres:5432/funch_db?schema=public` หากเว้นไว้ Compose จะใช้ `DATABASE_URL` |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | บัญชีและฐานข้อมูล PostgreSQL ของ Compose ค่าเริ่มต้นของผู้ใช้และฐานข้อมูลคือ `postgres` และ `funch_db` ให้ตั้งรหัสผ่านและใช้ค่าเดียวกันใน URL โดย URL-encode อักขระพิเศษในรหัสผ่าน |
 | `PGADMIN_DEFAULT_EMAIL`, `PGADMIN_DEFAULT_PASSWORD` | บัญชี pgAdmin ที่ Compose ใช้ ควรกำหนดทั้งสองค่าแม้จะเปิดเฉพาะบริการ `postgres` เพราะ Compose อ่านค่าจากไฟล์เดียวกัน |
@@ -27,21 +27,19 @@ REST API สำหรับระบบเช่ารถ FUNCH ใช้ Expres
 | `postgres` (PostgreSQL 16) | `localhost:5432` ปรับพอร์ตด้วย `POSTGRES_PORT` |
 | `pgadmin` (pgAdmin 4) | `http://localhost:5050` ปรับพอร์ตด้วย `PGADMIN_PORT` |
 
-สำหรับฐานข้อมูลพัฒนาใหม่ ให้เปิด PostgreSQL และ pgAdmin สร้างตารางจาก [Prisma schema](prisma/schema.prisma) แล้วรัน API แบบ hot reload
+สำหรับฐานข้อมูลพัฒนาใหม่ ให้เปิด PostgreSQL และ pgAdmin ใช้ [SQL migrations](db/migrations/) เพื่อสร้างตาราง แล้วรัน API แบบ hot reload
 
 ```bash
 docker compose up -d --wait postgres pgadmin
-docker compose run --rm --build --no-deps backend npm run prisma:push
-docker compose run --rm --no-deps --service-ports backend npm run dev
+docker compose run --rm --build --no-deps backend npm run db:migrate
+docker compose up -d --build backend
 ```
 
-คำสั่งสุดท้ายเปิดพอร์ต API และแสดง log ใน Terminal ที่รัน หากฐานข้อมูลมี schema พร้อมแล้ว ให้ข้าม `prisma:push` และใส่ `--build` ในคำสั่งสุดท้ายเมื่อยังไม่มี image
-
-ทั้ง `docker compose up` ที่เปิดบริการ `backend` และ `npm run docker:up` จะรัน `prisma migrate deploy` ก่อนเริ่ม API ชุดไฟล์ปัจจุบันไม่มี `prisma/migrations` และ Prisma จะคืน `P3005` หากฐานข้อมูลมีตารางแต่ไม่มีประวัติ migration จึงใช้ `docker compose run` ตามขั้นตอนด้านบนสำหรับการพัฒนา สำหรับฐานข้อมูลเดิมที่ต้องเก็บข้อมูล ให้ตรวจสอบ schema และประวัติ migration ก่อนปรับฐานข้อมูล
+`db:migrate` ใช้ `pg` รันไฟล์ SQL และบันทึกประวัติพร้อม checksum ใน `schema_migrations` คำสั่งรองรับฐานใหม่และฐานเดิมที่มีโครงสร้างตรงกับ migration รุ่นใดรุ่นหนึ่ง สำหรับการอัปเกรดพร้อมสำรองข้อมูลรถและการจอง ให้ใช้ [คู่มืออัปเกรดข้อมูลรถ](docs/cars.md)
 
 เปิด `http://localhost:5000/health` เพื่อตรวจการเชื่อมต่อ PostgreSQL ซึ่งตอบ HTTP 200 เมื่อเชื่อมต่อได้ หรือ 503 เมื่อเชื่อมต่อไม่ได้ ใช้ `docker compose ps` ตรวจบริการที่เปิดด้วย Compose
 
-หยุด API ด้วย `Ctrl+C` ใน Terminal ที่รัน จากนั้นใช้ `docker compose down` เพื่อหยุด PostgreSQL และ pgAdmin
+ดู log ด้วย `docker compose logs -f backend` และหยุดบริการด้วย `docker compose down`
 
 pgAdmin ใช้บัญชีจาก `PGADMIN_DEFAULT_EMAIL` และ `PGADMIN_DEFAULT_PASSWORD` รายการเซิร์ฟเวอร์ `FUNCH PostgreSQL` ใน [`servers.json`](servers.json) ใช้ `postgres:5432` พร้อมชื่อผู้ใช้และฐานข้อมูลค่าเริ่มต้น กรอก `POSTGRES_PASSWORD` ตอนเชื่อมต่อ และปรับการตั้งค่าเซิร์ฟเวอร์หากเปลี่ยนชื่อผู้ใช้หรือชื่อฐานข้อมูล
 
@@ -51,24 +49,24 @@ pgAdmin ใช้บัญชีจาก `PGADMIN_DEFAULT_EMAIL` และ `PGA
 
 ```bash
 npm ci
-npm run prisma:push
+npm run db:migrate
 npm run dev
 ```
 
-ใช้ `prisma:push` ในขั้นตอนนี้เมื่อเตรียมฐานข้อมูลพัฒนาใหม่ คำสั่งจะสร้าง Prisma Client ให้ด้วย สำหรับฐานข้อมูลที่มี schema พร้อมแล้ว ใช้ `npm run prisma:generate` ส่วนการรันโค้ดที่คอมไพล์แล้วใช้ `npm run build` ตามด้วย `npm start`
+ตั้ง `DATABASE_URL` ให้ชี้ไปยัง PostgreSQL database และ schema ที่เตรียมไว้ `db:migrate` ใช้กับฐานข้อมูลใหม่และฐานที่ต้องอัปเกรด เมื่อ schema พร้อมแล้วให้เริ่มด้วย `npm run dev` หรือใช้ `npm run build` ตามด้วย `npm start`
 
 Frontend เรียก backend ผ่าน Next.js API routes ตั้ง `BACKEND_URL` ฝั่ง frontend เป็น URL ที่ Next.js server เข้าถึงได้ เช่น `http://localhost:5000` เมื่อรันบนเครื่อง หรือ `http://host.docker.internal:5000` เมื่อรัน frontend ใน Docker Desktop
 
 ## ข้อมูลตัวอย่าง
 
-หลังเตรียมตารางและตั้ง `SEED_USER_PASSWORD` แล้ว ให้รันคำสั่งตามสภาพแวดล้อมที่ใช้
+คำสั่ง seed ใช้ `pg` และอ่าน `DATABASE_URL` หลังเตรียมตารางและตั้ง `SEED_USER_PASSWORD` แล้ว ให้รันคำสั่งตามสภาพแวดล้อมที่ใช้
 
 | สภาพแวดล้อม | คำสั่ง |
 | --- | --- |
-| Docker Compose | `docker compose run --rm --no-deps backend npm run prisma:seed` |
-| Node.js บนเครื่อง | `npm run prisma:seed` |
+| Docker Compose | `docker compose run --rm --no-deps backend npm run seed` |
+| Node.js บนเครื่อง | `npm run seed` |
 
-บัญชีตัวอย่างสำหรับแอดมินคือ `admin@funch.example` และสำหรับสมาชิกคือ `somchai@funch.example` ใช้รหัสผ่านที่ตั้งไว้ตอนสร้างบัญชีครั้งแรก ดูรายการข้อมูลตัวอย่างและคำสั่ง seed เฉพาะรถใน [คู่มือ Prisma](prisma/README.md)
+บัญชีตัวอย่างสำหรับแอดมินคือ `admin@funch.example` และสำหรับสมาชิกคือ `somchai@funch.example` ใช้รหัสผ่านที่ตั้งไว้ตอนสร้างบัญชีครั้งแรก ดูรายการข้อมูลตัวอย่างและคำสั่ง seed เฉพาะรถใน [คู่มือ seed](docs/seed.md)
 
 ## API
 
@@ -140,7 +138,7 @@ JSON คืน `summary`, `comparison`, `trend`, `countries`, `topCars`, `source
 ```bash
 npm run build
 npm test
-npm run prisma:seed:check
+npm run seed:check
 ```
 
 `npm test` รัน unit tests และข้าม integration tests เมื่อเว้น `AUTH_TEST_DATABASE_URL` ไว้ หากต้องการทดสอบกับ PostgreSQL ให้กำหนดค่านี้ใน environment หรือ `.env` ให้ชี้ไปที่ฐานข้อมูลทดสอบที่เตรียม schema และ seed แล้ว รันชุดทดสอบทีละไฟล์เพื่อลดการชนกันระหว่างสร้างและล้างข้อมูลทดสอบ
@@ -149,4 +147,6 @@ npm run prisma:seed:check
 node --import tsx --test --test-concurrency=1 tests/*.test.ts
 ```
 
-`npm run test:cars` ใช้สำหรับทดสอบการย้ายข้อมูลเดิมใน schema ชั่วคราวบน PostgreSQL ที่ `localhost` หรือ `127.0.0.1` ต้องมีไฟล์ migration ทางประวัติศาสตร์ใน `prisma/migrations` จึงจะรันได้
+`npm run test:cars` สร้าง schema ชั่วคราวบน PostgreSQL ที่ `localhost` หรือ `127.0.0.1` ตรวจการรัน seed ซ้ำและรันชุดทดสอบทั้งหมด แล้วลบ schema ที่สร้างขึ้นเมื่อจบ
+
+ซ้อมอัปเกรดข้อมูลเดิมด้วย `npm run test:cars -- --legacy` ชุดทดสอบใช้ไฟล์ SQL ใน repo และจำลองการรับช่วงฐานข้อมูลเดิมที่ยังไม่มีประวัติใน `schema_migrations`

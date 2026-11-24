@@ -1,3 +1,5 @@
+import { count, execute, fixtureCar, row } from './fixtures.js';
+import { closeDatabasePool } from '../src/lib/db.js';
 import 'dotenv/config';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,14 +12,13 @@ test('real bookings persist driver details and reject overlapping concurrent res
   process.env.AUTH_SECRET = 'booking-integration-test-only-1234567890';
   process.env.NODE_ENV = 'test';
   const { createApp } = await import('../src/app.js');
-  const { default: prisma } = await import('../src/lib/prisma.js');
   const run = randomUUID();
   const emails = [0, 1, 2, 3].map((i) => `booking-${run}-${i}@funch.example`);
-  const location = await prisma.location.findFirstOrThrow({ where: { timeZone: 'Asia/Tokyo' } });
-  const car = await prisma.car.create({ data: {
+  const location = await row('SELECT * FROM locations WHERE "timeZone" = $1 ORDER BY id LIMIT 1', ['Asia/Tokyo']);
+  const car = await fixtureCar({
     brand: 'Audit', model: 'Temporary test car', year: 2026, licensePlate: `audit-${run}`,
     country: location.countryCode, locationId: location.id, hourlyRate: 100, dailyRate: 1000,
-  } });
+  });
   const server = createApp().listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -41,7 +42,7 @@ test('real bookings persist driver details and reject overlapping concurrent res
       assert.equal(quote.body.data.calculation.totalPrice, 1000);
       const created = await post({ ...input, registerUser: guest(0) });
       assert.equal(created.status, 201);
-      const saved = await prisma.booking.findUniqueOrThrow({ where: { id: created.body.data.id } });
+      const saved = await row('SELECT * FROM bookings WHERE "id" = $1', [created.body.data.id]);
       assert.equal(saved.status, 'PENDING');
       assert.equal(saved.timeZone, 'Asia/Tokyo');
       assert.equal(saved.driverName, input.driverName);
@@ -53,7 +54,7 @@ test('real bookings persist driver details and reject overlapping concurrent res
     });
     await t.test('conflict rolls back registration and adjacent bookings remain allowed', async () => {
       assert.equal((await post({ ...input, registerUser: guest(1) })).status, 409);
-      assert.equal(await prisma.user.count({ where: { email: emails[1] } }), 0);
+      assert.equal(await count('SELECT count(*) AS count FROM users WHERE "email" = $1', [emails[1]]), 0);
       const adjacent = await post({ ...input, startDateTime: end.toISOString(), endDateTime: new Date(end.getTime() + 3_600_000).toISOString(), registerUser: guest(1) });
       assert.equal(adjacent.status, 201);
     });
@@ -61,7 +62,7 @@ test('real bookings persist driver details and reject overlapping concurrent res
       const range = { ...input, startDateTime: new Date(start.getTime() + 4 * 86_400_000).toISOString(), endDateTime: new Date(end.getTime() + 4 * 86_400_000).toISOString() };
       const results = await Promise.all([post({ ...range, registerUser: guest(2) }), post({ ...range, registerUser: guest(3) })]);
       assert.deepEqual(results.map((value) => value.status).sort(), [201, 409]);
-      assert.equal(await prisma.user.count({ where: { email: { in: emails.slice(2) } } }), 1);
+      assert.equal(await count('SELECT count(*) AS count FROM users WHERE "email" = ANY($1::text[])', [emails.slice(2)]), 1);
     });
     await t.test('invalid pickup, dropoff and past pickup cannot create records', async () => {
       for (const extra of [
@@ -70,11 +71,11 @@ test('real bookings persist driver details and reject overlapping concurrent res
       ]) assert.equal((await post({ ...input, ...extra, registerUser: guest(0) })).status, 400);
     });
   } finally {
-    await prisma.booking.deleteMany({ where: { carId: car.id } });
-    await prisma.car.delete({ where: { id: car.id } });
-    await prisma.user.deleteMany({ where: { email: { in: emails } } });
+    await execute('DELETE FROM bookings WHERE "carId" = $1', [car.id]);
+    await execute('DELETE FROM cars WHERE "id" = $1', [car.id]);
+    await execute('DELETE FROM users WHERE "email" = ANY($1::text[])', [emails]);
     server.close();
     await once(server, 'close');
-    await prisma.$disconnect();
+    await closeDatabasePool();
   }
 });

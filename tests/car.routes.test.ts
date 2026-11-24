@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
+import { closeDatabasePool } from '../src/lib/db.js';
 
-test('GET /api/cars and /api/locations return data from database', async () => {
+test('GET /api/cars and /api/locations return data from database', { skip: !process.env.AUTH_TEST_DATABASE_URL }, async () => {
+  process.env.DATABASE_URL = process.env.AUTH_TEST_DATABASE_URL;
   const { createApp } = await import('../src/app.js');
   const server = createApp().listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -48,7 +50,32 @@ test('GET /api/cars and /api/locations return data from database', async () => {
     const locBody = await locRes.json();
     assert.equal(locBody.success, true);
     assert.ok(locBody.data.length >= 10);
+
+    const englishFilter = await fetch(`${base}/api/locations?countryCode=jp&city=tOkYo`);
+    const thaiFilter = await fetch(`${base}/api/locations?countryCode=JP&city=${encodeURIComponent('โตเกียว')}`);
+    assert.equal(englishFilter.status, 200);
+    assert.equal(thaiFilter.status, 200);
+    const filtered = await englishFilter.json();
+    assert.equal(filtered.count, filtered.data.length);
+    assert.equal(filtered.data[0].id, 'seed-location-haneda');
+    assert.equal(filtered.data[0].country.code, 'JP');
+    assert.deepEqual(await thaiFilter.json(), filtered);
+
+    const station = filtered.data.find((location: { id: string }) => location.id === 'seed-location-tokyo-station');
+    assert.ok(station);
+    assert.equal(station.airportCode, null);
+    assert.equal(station.label, `${station.cityTh} - ${station.nameTh}`);
+    const detail = await fetch(`${base}/api/locations/seed-location-tokyo-station`);
+    assert.equal(detail.status, 200);
+    assert.deepEqual(await detail.json(), { success: true, data: station });
+    assert.equal((await fetch(`${base}/api/locations/missing-location`)).status, 404);
+
+    const health = await fetch(`${base}/health`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).database, 'connected');
   } finally {
     server.close();
+    await once(server, 'close');
+    await closeDatabasePool();
   }
 });

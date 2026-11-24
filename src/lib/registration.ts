@@ -1,4 +1,3 @@
-import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { hashPassword } from "../utils/password.js";
 
@@ -19,17 +18,6 @@ export const registrationSchema = z
     lastName: z.string().trim().min(1).max(100).optional(),
   })
   .strict();
-
-export const publicUserSelect = {
-  id: true,
-  email: true,
-  name: true,
-  phoneNumber: true,
-  firstName: true,
-  lastName: true,
-  role: true,
-  createdAt: true,
-} satisfies Prisma.UserSelect;
 
 export async function registrationData(
   input: z.infer<typeof registrationSchema>,

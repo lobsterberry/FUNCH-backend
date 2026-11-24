@@ -1,3 +1,5 @@
+import { execute, fixtureBooking, fixtureCar, fixtureLocation, fixtureUser } from './fixtures.js';
+import { closeDatabasePool, databasePool, queryRows } from '../src/lib/db.js';
 import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +12,6 @@ test('admin reports aggregate persisted bookings with authorized filters and com
   process.env.AUTH_SECRET = 'report-integration-test-secret-1234567890';
   process.env.NODE_ENV = 'test';
   const { createApp } = await import('../src/app.js');
-  const { default: prisma } = await import('../src/lib/prisma.js');
   const { hashPassword } = await import('../src/utils/password.js');
   const tag = `reports-${randomUUID()}`;
   const password = 'ReportTestPassword123!';
@@ -42,24 +43,31 @@ test('admin reports aggregate persisted bookings with authorized filters and com
   }
   const admin = client(); const member = client(); const anonymous = client();
   const prefix = '/api/admin/reports';
-  const query = '?start=2090-11-01&end=2090-11-02&country=QZ';
   let carId = ''; let locationId = ''; const countryCodes: string[] = [];
   try {
     const hash = await hashPassword(password);
-    const actor = await prisma.user.create({ data: { email: `${tag}-admin@funch.example`, name: 'Report Admin', password: hash, role: 'ADMIN' } });
-    const customer = await prisma.user.create({ data: { email: `${tag}-user@funch.example`, name: 'Report Customer', password: hash } });
+    const actor = await fixtureUser({ email: `${tag}-admin@funch.example`, name: 'Report Admin', password: hash, role: 'ADMIN' });
+    const customer = await fixtureUser({ email: `${tag}-user@funch.example`, name: 'Report Customer', password: hash });
     await admin.login(actor.email); await member.login(customer.email);
-    for (const code of ['QZ', 'QY']) {
-      await prisma.country.create({ data: { code, name: `${tag}-${code}`, nameTh: code, flag: code, currencyCode: 'THB', drivingSide: 'LEFT' } });
-      countryCodes.push(code);
-    }
-    locationId = (await prisma.location.create({ data: { name: tag, nameTh: 'Report pickup', city: tag, cityTh: tag, countryCode: 'QZ', timeZone: 'Asia/Tokyo' } })).id;
-    carId = (await prisma.car.create({ data: { brand: 'Edited', model: 'Current', year: 2026, licensePlate: tag,
-      country: 'QY', hourlyRate: 100, dailyRate: 1000, categories: ['SUV', 'EV'] } })).id;
+    const countries = await queryRows<{ code: string }>(databasePool(), `
+      INSERT INTO countries (code, name, "nameTh", flag, "currencyCode", "drivingSide")
+      SELECT candidate.code, $1 || '-' || candidate.code, candidate.code, candidate.code, 'THB', 'LEFT'
+      FROM (SELECT chr(a) || chr(b) AS code
+        FROM generate_series(65, 90) a CROSS JOIN generate_series(65, 90) b) candidate
+      WHERE NOT EXISTS (SELECT 1 FROM countries WHERE code::text = candidate.code)
+      ORDER BY random() LIMIT 2 ON CONFLICT (code) DO NOTHING RETURNING code`, [tag]);
+    countryCodes.push(...countries.map(({ code }) => code));
+    assert.equal(countryCodes.length, 2);
+    const [pickupCountry, legacyCountry] = countryCodes;
+    const period = '?start=2090-11-01&end=2090-11-02';
+    const query = period + '&country=' + pickupCountry;
+    locationId = (await fixtureLocation({ name: tag, nameTh: 'Report pickup', city: tag, cityTh: tag, countryCode: pickupCountry, timeZone: 'Asia/Tokyo' })).id;
+    carId = (await fixtureCar({ brand: 'Edited', model: 'Current', year: 2026, licensePlate: tag,
+      country: legacyCountry, hourlyRate: 100, dailyRate: 1000, categories: ['SUV', 'EV'] })).id;
     const createBooking = (status: 'APPROVED' | 'COMPLETED' | 'PENDING' | 'REJECTED' | 'CANCELLED', totalPrice: string, currencyCode = 'THB', createdAt = '2090-11-01T00:00:00Z', pickupLocationId: string | null = locationId) =>
-      prisma.booking.create({ data: { userId: customer.id, carId, status, totalPrice, currencyCode, pickupLocationId, createdAt: new Date(createdAt),
+      fixtureBooking({ userId: customer.id, carId, status, totalPrice, currencyCode, pickupLocationId, createdAt: new Date(createdAt),
         startDateTime: new Date('2090-12-01T00:00:00Z'), endDateTime: new Date('2090-12-02T00:00:00Z'), calculatedDays: 1,
-        carSnapshot: { brand: 'Original', model: 'Historical', licensePlate: 'SNAPSHOT' }, timeZone: 'Asia/Tokyo' } });
+        carSnapshot: { brand: 'Original', model: 'Historical', licensePlate: 'SNAPSHOT' }, timeZone: 'Asia/Tokyo' });
     await createBooking('APPROVED', '0.10', 'THB', '2090-10-31T17:00:00Z');
     await createBooking('COMPLETED', '0.20', 'THB', '2090-11-02T16:59:59.999Z');
     await createBooking('PENDING', '10'); await createBooking('REJECTED', '20'); await createBooking('CANCELLED', '30');
@@ -85,12 +93,12 @@ test('admin reports aggregate persisted bookings with authorized filters and com
       assert.equal(data.comparison.start, '2090-10-30'); assert.equal(data.comparison.end, '2090-10-31');
       assert.equal(data.comparison.summary.currencies[0].confirmed, '5.00');
       assert.equal(data.bookings[0].carName, 'Original Historical'); assert.equal(data.bookings[0].licensePlate, 'SNAPSHOT');
-      assert.equal(data.countries[0].code, 'QZ');
+      assert.equal(data.countries[0].code, pickupCountry);
       assert.equal(data.trend[0].amounts.THB, '0.10'); assert.equal(data.trend[1].amounts.THB, '0.20');
       assert.equal((await admin.request(prefix + query + '&currency=USD')).data.data.summary.total, 1);
       assert.equal((await admin.request(prefix + query + '&category=EV')).data.data.summary.total, 6);
       assert.equal((await admin.request(prefix + query + '&category=SEDAN')).data.data.summary.total, 0);
-      assert.equal((await admin.request(prefix + '?start=2090-11-01&end=2090-11-02&country=QY')).data.data.summary.total, 1);
+      assert.equal((await admin.request(prefix + period + '&country=' + legacyCountry)).data.data.summary.total, 1);
       assert.equal((await admin.request(prefix + query + '&basis=startDateTime')).data.data.summary.total, 0);
       assert.equal((await admin.request(prefix + query + '&comparison=none')).data.data.comparison, null);
     });
@@ -111,11 +119,11 @@ test('admin reports aggregate persisted bookings with authorized filters and com
       }
     });
   } finally {
-    if (carId) { await prisma.booking.deleteMany({ where: { carId } }); await prisma.car.delete({ where: { id: carId } }); }
-    if (locationId) await prisma.location.delete({ where: { id: locationId } });
-    await prisma.country.deleteMany({ where: { code: { in: countryCodes } } });
-    await prisma.user.deleteMany({ where: { email: { startsWith: tag } } });
+    if (carId) { await execute('DELETE FROM bookings WHERE "carId" = $1', [carId]); await execute('DELETE FROM cars WHERE "id" = $1', [carId]); }
+    if (locationId) await execute('DELETE FROM locations WHERE "id" = $1', [locationId]);
+    await execute('DELETE FROM countries WHERE "code" = ANY($1::text[])', [countryCodes]);
+    await execute('DELETE FROM users WHERE starts_with("email", $1)', [tag]);
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    await prisma.$disconnect();
+    await closeDatabasePool();
   }
 });
