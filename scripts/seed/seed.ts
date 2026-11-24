@@ -1,5 +1,6 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { closeDatabasePool, withTransaction } from "../../src/lib/db.js";
 import { upsertSeedBookings, upsertSeedCars } from "../../src/lib/db-write.js";
 import { attachLegacyCar, carsByIds, lockCarInventory } from "../../src/lib/inventory-queries.js";
@@ -131,14 +132,14 @@ async function main() {
     return;
   }
 
-  const seedPassword = process.env.SEED_USER_PASSWORD;
+  const memberPassword = process.env.SEED_USER_PASSWORD || randomBytes(24).toString("base64url");
   assert(
-    seedPassword && seedPassword.length >= 12,
-    "Set SEED_USER_PASSWORD to at least 12 characters before seeding demo users",
+    memberPassword.length >= 12,
+    "SEED_USER_PASSWORD must be at least 12 characters when set for demo members",
   );
   const seededUsers = await Promise.all(users.map(async (user) => ({
     ...user,
-    password: await hashPassword(seedPassword),
+    password: await hashPassword(user.id === "seed-user-admin" ? "FunchDemo2026!" : memberPassword),
   })));
   const firstNewMemberBooking = Math.min(...bookings
     .filter(({ userId }) => userId === "seed-user-new-member")

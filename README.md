@@ -17,7 +17,7 @@ REST API สำหรับระบบเช่ารถ FUNCH ใช้ Expres
 | `DOCKER_DATABASE_URL` | ใช้เมื่อรัน backend ใน Compose เช่น `postgresql://postgres:ENCODED_PASSWORD@postgres:5432/funch_db?schema=public` หากเว้นไว้ Compose จะใช้ `DATABASE_URL` |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | บัญชีและฐานข้อมูล PostgreSQL ของ Compose ค่าเริ่มต้นของผู้ใช้และฐานข้อมูลคือ `postgres` และ `funch_db` ให้ตั้งรหัสผ่านและใช้ค่าเดียวกันใน URL โดย URL-encode อักขระพิเศษในรหัสผ่าน |
 | `PGADMIN_DEFAULT_EMAIL`, `PGADMIN_DEFAULT_PASSWORD` | บัญชี pgAdmin ที่ Compose ใช้ ควรกำหนดทั้งสองค่าแม้จะเปิดเฉพาะบริการ `postgres` เพราะ Compose อ่านค่าจากไฟล์เดียวกัน |
-| `SEED_USER_PASSWORD` | รหัสผ่านบัญชีตัวอย่างอย่างน้อย 12 ตัวอักษร ใช้เมื่อรัน seed ทั้งชุด |
+| `SEED_USER_PASSWORD` | รหัสผ่านสำหรับบัญชีสมาชิกตัวอย่างที่สร้างใหม่ ตั้งอย่างน้อย 12 ตัวอักษร หากเว้นว่าง seed จะสุ่มรหัสผ่านให้ |
 
 ## รันด้วย Docker Compose
 
@@ -59,14 +59,14 @@ Frontend เรียก backend ผ่าน Next.js API routes ตั้ง `B
 
 ## ข้อมูลตัวอย่าง
 
-คำสั่ง seed ใช้ `pg` และอ่าน `DATABASE_URL` หลังเตรียมตารางและตั้ง `SEED_USER_PASSWORD` แล้ว ให้รันคำสั่งตามสภาพแวดล้อมที่ใช้
+คำสั่ง seed ใช้ `pg` และอ่าน `DATABASE_URL` หลังเตรียมตารางแล้ว ให้รันคำสั่งตามสภาพแวดล้อมที่ใช้
 
 | สภาพแวดล้อม | คำสั่ง |
 | --- | --- |
 | Docker Compose | `docker compose run --rm --no-deps backend npm run seed` |
 | Node.js บนเครื่อง | `npm run seed` |
 
-บัญชีตัวอย่างสำหรับแอดมินคือ `admin@funch.example` และสำหรับสมาชิกคือ `somchai@funch.example` ใช้รหัสผ่านที่ตั้งไว้ตอนสร้างบัญชีครั้งแรก ดูรายการข้อมูลตัวอย่างและคำสั่ง seed เฉพาะรถใน [คู่มือ seed](docs/seed.md)
+seed สร้างบัญชี `admin@funch.example` ด้วย Role `ADMIN` และรหัสผ่านเริ่มต้น `FunchDemo2026!` สำหรับฐานข้อมูลพัฒนา ตั้ง `SEED_USER_PASSWORD` ก่อนสร้างบัญชีสมาชิกตัวอย่างครั้งแรกหากต้องการล็อกอินด้วยบัญชีอย่าง `somchai@funch.example` การรัน seed ซ้ำจะเก็บรหัสผ่านเดิมของบัญชีที่มีอยู่แล้ว ดูรายการข้อมูลตัวอย่างและคำสั่ง seed เฉพาะรถใน [คู่มือ seed](docs/seed.md)
 
 ## API
 

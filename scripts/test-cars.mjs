@@ -21,7 +21,7 @@ const env = {
   DATABASE_URL: testUrl,
   AUTH_TEST_DATABASE_URL: testUrl,
   NODE_ENV: "test",
-  SEED_USER_PASSWORD: "CarsTestSeedPassword123!",
+  SEED_USER_PASSWORD: "",
 };
 const serverUrl = new URL(url);
 serverUrl.searchParams.delete("schema");
@@ -111,12 +111,16 @@ async function checkSeed() {
     (SELECT count(*) FROM car_model_locations) AS offers, (SELECT count(*) FROM cars) AS cars`);
   const detailFields = 'id, "exteriorColor", vin, "odometerKm"';
   const readDetails = (id) => row("SELECT " + detailFields + " FROM cars WHERE id = $1", [id]);
-  const readSeedUser = () => row('SELECT password, "createdAt", "sessionVersion" FROM users WHERE id = $1',
+  const readSeedUser = () => row('SELECT email, role, password, "createdAt", "sessionVersion" FROM users WHERE id = $1',
     ["seed-user-admin"]);
   seed();
   const seededCounts = await counts();
   const seedUser = await readSeedUser();
-  assert.ok(await verifyPassword(env.SEED_USER_PASSWORD, seedUser.password));
+  assert.equal(seedUser.email, "admin@funch.example");
+  assert.equal(seedUser.role, "ADMIN");
+  assert.ok(await verifyPassword("FunchDemo2026!", seedUser.password));
+  const seedMember = await row("SELECT password FROM users WHERE id = $1", ["seed-user-somchai"]);
+  assert.ok(!(await verifyPassword("FunchDemo2026!", seedMember.password)));
   assert.equal(seedUser.createdAt.toISOString(), "2026-09-01T00:00:00.000Z");
   await db.query('UPDATE users SET "sessionVersion" = $1 WHERE id = $2', [3, "seed-user-admin"]);
   const demoCars = await rows("SELECT " + detailFields + " FROM cars WHERE starts_with(id, $1)", ["seed-car-"]);

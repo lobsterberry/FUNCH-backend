@@ -8,7 +8,7 @@
 
 - เมื่อรัน Node.js บนเครื่อง ให้ตั้ง `DATABASE_URL` ให้ชี้ไปที่ `localhost` และพอร์ต `POSTGRES_PORT` หากใช้ PostgreSQL จาก Docker Compose
 - เมื่อรัน backend ใน Docker Compose ให้ตั้ง `DOCKER_DATABASE_URL` ให้ชี้ไปที่ `postgres:5432` ค่าผู้ใช้ รหัสผ่าน และชื่อฐานข้อมูลใน URL ต้องตรงกับ `POSTGRES_USER`, `POSTGRES_PASSWORD` และ `POSTGRES_DB` ให้ URL-encode อักขระพิเศษในรหัสผ่านเมื่อใส่ใน URL
-- ตั้ง `SEED_USER_PASSWORD` อย่างน้อย 12 ตัวอักษรก่อนรัน seed ทั้งชุด ดูค่าที่ Docker Compose ต้องใช้เพิ่มเติมได้จาก [คู่มือ backend](../README.md)
+- หากต้องการล็อกอินด้วยบัญชีสมาชิกตัวอย่าง ให้ตั้ง `SEED_USER_PASSWORD` อย่างน้อย 12 ตัวอักษรก่อนสร้างบัญชีครั้งแรก หากเว้นว่าง seed จะสุ่มรหัสผ่านให้ ดูค่าที่ Docker Compose ใช้ใน [คู่มือ backend](../README.md)
 
 ### เตรียมฐานข้อมูลบนเครื่อง
 
@@ -51,7 +51,7 @@ docker compose up -d backend
 | บัญชี | แอดมิน 1 บัญชี สมาชิกที่เปิดใช้งาน 3 บัญชี และสมาชิกที่ปิดใช้งาน 1 บัญชี |
 | การจอง | 11 รายการ ครบทั้ง `PENDING`, `APPROVED`, `REJECTED`, `CANCELLED` และ `COMPLETED` รวมตัวอย่างรับรถที่ฮาเนดะและคืนที่สถานีโตเกียว |
 
-ใช้ `admin@funch.example` สำหรับแอดมิน หรือ `somchai@funch.example` สำหรับสมาชิก ร่วมกับรหัสผ่านที่ตั้งไว้ตอนสร้างบัญชี รหัสผ่านถูกเก็บเป็นแฮชรูปแบบ `scrypt$salt$hash` ดู [คู่มือ Auth API](../AUTH.md)
+บัญชีแอดมินตัวอย่าง `admin@funch.example` มี Role `ADMIN` และใช้รหัสผ่าน `FunchDemo2026!` เมื่อสร้างครั้งแรก ส่วนบัญชีสมาชิก เช่น `somchai@funch.example` ใช้รหัสผ่านจาก `SEED_USER_PASSWORD` หากกำหนดไว้ตอนสร้างบัญชี รหัสผ่านถูกเก็บเป็นแฮชรูปแบบ `scrypt$salt$hash` ดู [คู่มือ Auth API](../AUTH.md)
 
 ชุดข้อมูลฮาเนดะมีรถต้นแบบพร้อมบริการ 18 รุ่น ตัวอย่างทริปวันที่ 20 พ.ย. 2026 เวลา 10:00 ถึง 22 พ.ย. เวลา 15:00 ตามเวลาญี่ปุ่น คิดเป็น 3 วัน ราคา Harrier, Serena, Model 3 และ Corolla Cross คือ 6,600, 7,800, 9,300 และ 5,400 บาทตามลำดับ
 
