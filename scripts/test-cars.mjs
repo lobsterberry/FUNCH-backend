@@ -1,7 +1,7 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { escapeIdentifier } from "pg";
 import { createDatabasePool, queryOne, queryRows, required, withTransaction } from "../src/lib/db.ts";
@@ -39,70 +39,40 @@ const rows = (sql, parameters) => queryRows(db, sql, parameters);
 const row = async (sql, parameters) => required(await queryOne(db, sql, parameters));
 
 async function legacyRehearsal() {
-  const migrations = await readMigrations();
-  const split = migrations.findIndex(({ name }) => name === "20261117000000_model_fleet_locations.sql");
-  assert.ok(split > 0, "Model/fleet migration is missing");
+  const [initial, ...pending] = await readMigrations();
+  const { previousHistory } = JSON.parse(readFileSync(new URL("../db/baseline-signatures.json", import.meta.url), "utf8"));
+  const previousEntries = Object.entries(previousHistory).sort(([a], [b]) => a.localeCompare(b));
   await withTransaction(async (tx) => {
-    for (const { sql } of migrations.slice(0, split)) await tx.query(sql);
+    await tx.query(initial.sql);
+    await tx.query(`CREATE TABLE schema_migrations (
+      name text PRIMARY KEY,
+      checksum text NOT NULL,
+      "appliedAt" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`);
+    for (const entry of previousEntries.slice(0, -1)) {
+      await tx.query("INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)", entry);
+    }
   }, { db });
   await db.query(`INSERT INTO countries (code,name,"nameTh",flag,"currencyCode","drivingSide")
     VALUES ('ZZ','Migration fixture','Migration fixture','ZZ','THB','LEFT')`);
-  await db.query(`INSERT INTO locations (id,name,"nameTh",city,"cityTh","countryCode","timeZone")
-    VALUES ('legacy-A','A','A','Test','Test','ZZ','UTC'), ('legacy-B','B','B','Test','Test','ZZ','UTC')`);
-  await db.query(`INSERT INTO users (id,email,password,name,"updatedAt")
-    VALUES ('legacy-user','legacy@migration.example','fixture','Migration',NOW())`);
-  for (const [id, location, rate, steering] of [
-    ["legacy-1", "legacy-A", 100, "RHD"], ["legacy-2", "legacy-A", 100, "RHD"],
-    ["legacy-3", "legacy-B", 200, "RHD"], ["legacy-4", "legacy-B", 100, "LHD"],
-    ["legacy-unassigned", null, 100, "RHD"],
-  ]) {
-    await db.query(`INSERT INTO cars (id,brand,model,year,"licensePlate",country,"hourlyRate",
-      "dailyRate","locationId","steeringSide","updatedAt")
-      VALUES ($1,'Migration','Same name',2026,$1,'ZZ',$2,1000,$3,$4,NOW())`,
-      [id, rate, location, steering]);
-  }
-  const photo = "https://example.com/legacy-car.jpg";
-  await db.query('UPDATE cars SET "imageUrl" = $1 WHERE "locationId" IS NOT NULL', [photo]);
-  await db.query(`INSERT INTO bookings (id,"bookingNumber","userId","carId","startDateTime","endDateTime",
-    "totalPrice","hourlyRate","dailyRate","pickupLocationId","dropoffLocationId","updatedAt")
-    VALUES ('legacy-booking','legacy-number','legacy-user','legacy-1','2030-01-01T09:00:00Z',
-      '2030-01-01T17:00:00Z',1234.50,100,1000,'legacy-A','legacy-A',NOW())`);
-  await db.query('UPDATE cars SET "isAvailable" = false WHERE id = $1', ["legacy-unassigned"]);
-  const before = await row("SELECT to_jsonb(b) AS data FROM bookings b WHERE id = $1", ["legacy-booking"]);
-  await db.query('UPDATE cars SET "imageUrl" = $2 WHERE id = $1', ["legacy-unassigned", photo]);
-  await assert.rejects(
-    withTransaction(applyMigrations, { db }),
-    /contains photos that are missing from or differ from the linked model/,
-  );
-  assert.deepEqual(await row(`SELECT to_regclass('schema_migrations') AS ledger,
-    to_regclass('car_models') AS models`), { ledger: null, models: null });
-  await db.query('UPDATE cars SET "imageUrl" = NULL WHERE id = $1', ["legacy-unassigned"]);
+  await db.query(`INSERT INTO cars (id,brand,model,year,"licensePlate",country,"hourlyRate","dailyRate","updatedAt")
+    VALUES ('legacy-1','Migration','Fixture',2026,'legacy-1','ZZ',100,1000,NOW())`);
+  const readCar = () => row("SELECT * FROM cars WHERE id = $1", ["legacy-1"]);
+  const readHistory = () => rows("SELECT name, checksum FROM schema_migrations ORDER BY name");
+  const car = await readCar();
+  const partialHistory = await readHistory();
+
+  await assert.rejects(withTransaction(applyMigrations, { db }), /does not match the complete chain/);
+  assert.deepEqual(await readHistory(), partialHistory);
+  assert.deepEqual(await readCar(), car);
+
+  await db.query("INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)", previousEntries.at(-1));
   const result = await withTransaction(applyMigrations, { db });
-  assert.deepEqual(result.baselined, migrations.slice(0, split).map(({ name }) => name));
-  assert.deepEqual(result.applied, migrations.slice(split).map(({ name }) => name));
-  const after = await row('SELECT to_jsonb(b) AS data, "totalPrice" FROM bookings b WHERE id = $1', ["legacy-booking"]);
-  assert.equal(after.data.carId, "legacy-1");
-  assert.equal(after.totalPrice, "1234.5");
-  for (const [key, value] of Object.entries(before.data)) {
-    assert.deepEqual(after.data[key], value, "Historical booking changed: " + key);
-  }
-  const cars = await rows(`SELECT c.*, o."carModelId", m."imageUrl" FROM cars c
-    LEFT JOIN car_model_locations o ON o.id = c."carModelLocationId"
-    LEFT JOIN car_models m ON m.id = o."carModelId" WHERE c.country = $1 ORDER BY c.id`, ["ZZ"]);
-  assert.equal(cars[0].carModelLocationId, cars[1].carModelLocationId);
-  assert.equal(cars[0].carModelId, cars[2].carModelId);
-  assert.notEqual(cars[0].carModelLocationId, cars[2].carModelLocationId);
-  assert.notEqual(cars[0].carModelId, cars[3].carModelId);
-  assert.equal(cars[4].carModelLocationId, null);
-  assert.equal(cars[4].operationalStatus, "INACTIVE");
-  assert.equal(cars[0].operationalStatus, "AVAILABLE");
-  assert.equal(cars[0].exteriorColor, null);
-  assert.equal(cars[0].odometerKm, null);
-  assert.equal(cars[0].vin, null);
-  assert.equal(cars[0].imageUrl, photo);
-  assert.deepEqual(await rows(`SELECT column_name FROM information_schema.columns
-    WHERE table_schema = $1 AND table_name = 'cars' AND column_name = 'imageUrl'`, [schema]), []);
-  console.log("Legacy data, prices and registration history verified.");
+  assert.deepEqual(result.baselined, [initial.name]);
+  assert.deepEqual(result.applied, pending.map(({ name }) => name));
+  assert.deepEqual(await readHistory(), [initial, ...pending].map(({ name, checksum }) => ({ name, checksum })));
+  assert.deepEqual(await readCar(), car);
+  console.log("Previous migration history adopted with existing car data intact.");
 }
 
 async function checkSeed() {

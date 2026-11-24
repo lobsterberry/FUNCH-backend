@@ -74,10 +74,20 @@ export async function applyMigrations(tx) {
     "appliedAt" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
   const history = await queryRows(tx, "SELECT name, checksum FROM schema_migrations ORDER BY name");
-  for (const [index, entry] of history.entries()) {
-    const expected = migrations[index];
-    if (entry.name !== expected?.name || entry.checksum !== expected.checksum) {
-      throw new Error("SQL migration history does not match the checked-in files at " + entry.name);
+  const { signatures, previousHistory } = JSON.parse(await readFile(baselineFile, "utf8"));
+  const replacingHistory = Object.hasOwn(previousHistory, history[0]?.name);
+  if (replacingHistory) {
+    const expected = Object.keys(previousHistory).sort();
+    if (history.length !== expected.length ||
+        !history.every(({ name, checksum }, index) => name === expected[index] && checksum === previousHistory[name])) {
+      throw new Error("Previous SQL migration history does not match the complete chain. Verify it using the previous release before adopting the initial schema.");
+    }
+  } else {
+    for (const [index, entry] of history.entries()) {
+      const expected = migrations[index];
+      if (entry.name !== expected?.name || entry.checksum !== expected.checksum) {
+        throw new Error("SQL migration history does not match the checked-in files at " + entry.name);
+      }
     }
   }
   const record = (migration) => tx.query(
@@ -85,23 +95,27 @@ export async function applyMigrations(tx) {
     [migration.name, migration.checksum],
   );
   const baselined = [];
-  if (!history.length) {
+  let completedCount = history.length;
+  if (!history.length || replacingHistory) {
     const signature = await inspectMigrationSchema(tx);
-    if (signature) {
-      const signatures = JSON.parse(await readFile(baselineFile, "utf8"));
+    if (signature || replacingHistory) {
       const version = signatures[signature];
       const index = migrations.findIndex(({ name }) => name === version);
-      if (index === -1) {
-        throw new Error("Existing database structure does not match a known migration. Inspect its schema before upgrading.");
+      if (index === -1 || (replacingHistory && index !== 0)) {
+        throw new Error("Existing database structure does not match a known migration. Verify it using the previous release before adopting the initial schema.");
       }
-      for (const migration of migrations.slice(0, index + 1)) {
+      if (replacingHistory) {
+        await tx.query("DELETE FROM schema_migrations");
+      }
+      completedCount = index + 1;
+      for (const migration of migrations.slice(0, completedCount)) {
         await record(migration);
         baselined.push(migration.name);
       }
     }
   }
   const applied = [];
-  for (const migration of migrations.slice(history.length + baselined.length)) {
+  for (const migration of migrations.slice(completedCount)) {
     await tx.query(migration.sql);
     await record(migration);
     applied.push(migration.name);

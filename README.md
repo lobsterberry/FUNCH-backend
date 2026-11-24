@@ -27,7 +27,7 @@ REST API สำหรับระบบเช่ารถ FUNCH ใช้ Expres
 | `postgres` (PostgreSQL 16) | `localhost:5432` ปรับพอร์ตด้วย `POSTGRES_PORT` |
 | `pgadmin` (pgAdmin 4) | `http://localhost:5050` ปรับพอร์ตด้วย `PGADMIN_PORT` |
 
-สำหรับฐานข้อมูลพัฒนาใหม่ ให้เปิด PostgreSQL และ pgAdmin ใช้ [SQL migrations](db/migrations/) เพื่อสร้างตาราง แล้วรัน API แบบ hot reload
+สำหรับฐานข้อมูลพัฒนาใหม่ ให้เปิด PostgreSQL และ pgAdmin ใช้ [initial migration](db/migrations/20261124000000_initial_rental_schema.sql) เพื่อสร้างตาราง แล้วรัน API แบบ hot reload
 
 ```bash
 docker compose up -d --wait postgres pgadmin
@@ -35,7 +35,7 @@ docker compose run --rm --build --no-deps backend npm run db:migrate
 docker compose up -d --build backend
 ```
 
-`db:migrate` ใช้ `pg` รันไฟล์ SQL และบันทึกประวัติพร้อม checksum ใน `schema_migrations` คำสั่งรองรับฐานใหม่และฐานเดิมที่มีโครงสร้างตรงกับ migration รุ่นใดรุ่นหนึ่ง สำหรับการอัปเกรดพร้อมสำรองข้อมูลรถและการจอง ให้ใช้ [คู่มืออัปเกรดข้อมูลรถ](docs/cars.md)
+`db:migrate` ใช้ `pg` รันไฟล์ SQL และบันทึกประวัติพร้อม checksum ใน `schema_migrations` ฐานข้อมูลที่ใช้ migration ชุดเดิมครบและมี schema ตรงกับรุ่นแรกจะรับประวัติ initial ได้โดยเก็บข้อมูลเดิมไว้ หากยังรัน migration ชุดเดิมไม่ครบ ให้ทำตาม [คู่มืออัปเกรดข้อมูลรถ](docs/cars.md)
 
 เปิด `http://localhost:5000/health` เพื่อตรวจการเชื่อมต่อ PostgreSQL ซึ่งตอบ HTTP 200 เมื่อเชื่อมต่อได้ หรือ 503 เมื่อเชื่อมต่อไม่ได้ ใช้ `docker compose ps` ตรวจบริการที่เปิดด้วย Compose
 
@@ -149,4 +149,4 @@ node --import tsx --test --test-concurrency=1 tests/*.test.ts
 
 `npm run test:cars` สร้าง schema ชั่วคราวบน PostgreSQL ที่ `localhost` หรือ `127.0.0.1` ตรวจการรัน seed ซ้ำและรันชุดทดสอบทั้งหมด แล้วลบ schema ที่สร้างขึ้นเมื่อจบ
 
-ซ้อมอัปเกรดข้อมูลเดิมด้วย `npm run test:cars -- --legacy` ชุดทดสอบใช้ไฟล์ SQL ใน repo และจำลองการรับช่วงฐานข้อมูลเดิมที่ยังไม่มีประวัติใน `schema_migrations`
+ใช้ `npm run test:cars -- --legacy` เพื่อทดสอบการรับประวัติจาก migration ชุดเดิมและตรวจว่าข้อมูลรถเดิมยังอยู่
