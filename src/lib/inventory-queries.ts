@@ -99,30 +99,6 @@ export function carsByIds(db: Database, ids: string[]) {
   );
 }
 
-export function publicCar(db: Database, id: string) {
-  return queryOne<CarWithLocation>(
-    db, 'SELECT ' + carColumns + ', to_jsonb(l) AS location, to_jsonb(co) AS "countryInfo"' +
-      ' FROM cars c ' + carLocations + ' WHERE c.id = $1', [id],
-  );
-}
-
-export function listPublicCars(db: Database, filters: {
-  country: string | null; available: boolean | null; category: string | null; locationId: string | null;
-}) {
-  return queryRows<CarWithLocation>(
-    db,
-    'SELECT ' + carColumns + ', to_jsonb(l) AS location, to_jsonb(co) AS "countryInfo"' +
-      ' FROM cars c ' + carLocations + `
-      WHERE ($1::text IS NULL OR c.country = $1)
-        AND ($2::boolean IS NULL OR c."isAvailable" = $2)
-        AND ($3::text IS NULL OR $3 = ANY(c.categories::text[]) OR c."categoryLabel" ILIKE $4)
-        AND ($5::text IS NULL OR c."locationId" = $5)
-      ORDER BY c."isFeatured" DESC, c."recommendationOrder", c."createdAt" DESC`,
-    [filters.country, filters.available, filters.category?.toUpperCase() ?? null,
-      filters.category === null ? null : "%" + filters.category + "%", filters.locationId],
-  );
-}
-
 export function findModel(db: Database, id: string) {
   return queryOne<CarModel>(db, "SELECT " + modelColumns + " FROM car_models m WHERE m.id = $1", [id]);
 }

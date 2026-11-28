@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { closeDatabasePool } from '../src/lib/db.js';
 
-test('GET /api/cars and /api/locations return data from database', { skip: !process.env.AUTH_TEST_DATABASE_URL }, async () => {
+test('car search and locations return data from the database', { skip: !process.env.AUTH_TEST_DATABASE_URL }, async () => {
   process.env.DATABASE_URL = process.env.AUTH_TEST_DATABASE_URL;
   const { createApp } = await import('../src/app.js');
   const server = createApp().listen(0, '127.0.0.1');
@@ -13,8 +13,7 @@ test('GET /api/cars and /api/locations return data from database', { skip: !proc
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   try {
-    // 1. Test GET /api/cars
-    const carsRes = await fetch(`${base}/api/cars`);
+    const carsRes = await fetch(`${base}/api/cars/search`);
     assert.equal(carsRes.status, 200);
     const carsBody = await carsRes.json();
     assert.equal(carsBody.success, true);
@@ -28,23 +27,13 @@ test('GET /api/cars and /api/locations return data from database', { skip: !proc
     assert.ok(firstCar.hour > 0);
     assert.ok(firstCar.steering === 'right' || firstCar.steering === 'left');
 
-    // 2. Test GET /api/cars?country=JP
-    const jpCarsRes = await fetch(`${base}/api/cars?country=JP`);
+    const jpCarsRes = await fetch(`${base}/api/cars/search?country=JP`);
     assert.equal(jpCarsRes.status, 200);
     const jpCarsBody = await jpCarsRes.json();
     assert.equal(jpCarsBody.success, true);
+    assert.ok(jpCarsBody.data.length > 0);
     assert.ok(jpCarsBody.data.every((c: any) => c.country === 'JP'));
 
-    // 3. Test GET /api/cars/meta
-    const metaRes = await fetch(`${base}/api/cars/meta`);
-    assert.equal(metaRes.status, 200);
-    const metaBody = await metaRes.json();
-    assert.equal(metaBody.success, true);
-    assert.ok(metaBody.data.categories.length > 0);
-    assert.ok(metaBody.data.fuels.length > 0);
-    assert.ok(metaBody.data.features.length > 0);
-
-    // 4. Test GET /api/locations
     const locRes = await fetch(`${base}/api/locations`);
     assert.equal(locRes.status, 200);
     const locBody = await locRes.json();

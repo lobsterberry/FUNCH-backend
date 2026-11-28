@@ -74,7 +74,7 @@ export function createApp() {
         health: "/health",
         countries: "/api/countries",
         locations: "/api/locations",
-        cars: "/api/cars",
+        cars: "/api/cars/search",
         bookings: "/api/bookings",
         calculatePrice: "POST /api/bookings/calculate",
         register: "POST /api/auth/register",

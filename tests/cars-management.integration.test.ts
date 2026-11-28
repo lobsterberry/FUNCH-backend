@@ -65,7 +65,7 @@ test('admin login and car management HTTP flow', { skip: !process.env.AUTH_TEST_
     });
     await t.test('anonymous users and members cannot list, add or modify inventory', async () => {
       for (const [actor, status] of [[anonymous, 401], [member, 403]] as const) {
-        assert.equal((await actor.request('/api/cars/admin')).status, status);
+        assert.equal((await actor.request('/api/cars/catalog')).status, status);
         assert.equal((await actor.request('/api/cars', 'POST', input)).status, status);
         assert.equal((await actor.request('/api/cars/missing', 'PATCH', input)).status, status);
       }
@@ -80,8 +80,10 @@ test('admin login and car management HTTP flow', { skip: !process.env.AUTH_TEST_
       assert.equal(saved.isAvailable, false);
       assert.deepEqual(saved.featureCodes, ['GPS_EN']);
       assert.deepEqual(saved.categories, ['SUV', 'ECO']);
-      const list = await admin.request('/api/cars/admin');
-      const unit = list.data.data.find((car: { id: string }) => car.id === carId);
+      const catalog = await admin.request('/api/cars/catalog');
+      assert.equal(catalog.status, 200);
+      const unit = catalog.data.data.units.find((car: { id: string }) => car.id === carId);
+      assert.ok(unit);
       assert.equal(unit.rawModel, 'Test Car');
       assert.equal(unit.year, 2026);
       assert.equal(unit.rentalStatus, 'IDLE');
@@ -111,19 +113,28 @@ test('admin login and car management HTTP flow', { skip: !process.env.AUTH_TEST_
       assert.equal(updated.status, 200);
       const saved = await inventoryCar(carId);
       assert.equal(saved.carModelLocation?.carModel.imageUrl, imageUrl);
-      const publicCar = await anonymous.request(`/api/cars/${carId}`);
-      assert.equal(publicCar.data.data.name, 'Integration Updated');
-      assert.equal(publicCar.data.data.day, 1500);
-      assert.equal(publicCar.data.data.isAvailable, true);
-      assert.equal(publicCar.data.data.description, 'Preserve this');
-      assert.equal(publicCar.data.data.rating, 4.9);
+      const search = await anonymous.request(`/api/cars/search?${new URLSearchParams({ locationId })}`);
+      assert.equal(search.status, 200);
+      const offer = search.data.data.find((car: { id: string }) => car.id === saved.carModelLocationId);
+      assert.ok(offer);
+      assert.equal(offer.name, 'Integration Updated');
+      assert.equal(offer.day, 1500);
+      assert.equal(offer.isAvailable, true);
+      assert.equal(offer.description, 'Preserve this');
+      assert.equal(offer.rating, 4.9);
     });
     await t.test('booking status is derived from live bookings and moving booked cars is rejected', async () => {
       const now = Date.now();
       const booking = await fixtureBooking({
         userId, carId, status: 'PENDING', startDateTime: new Date(now + 86400000), endDateTime: new Date(now + 172800000), totalPrice: 1500,
       });
-      const state = async () => (await admin.request('/api/cars/admin')).data.data.find((car: { id: string }) => car.id === carId).rentalStatus;
+      const state = async () => {
+        const catalog = await admin.request('/api/cars/catalog');
+        assert.equal(catalog.status, 200);
+        const unit = catalog.data.data.units.find((car: { id: string }) => car.id === carId);
+        assert.ok(unit);
+        return unit.rentalStatus;
+      };
       assert.equal(await state(), 'RESERVED');
       await execute(`UPDATE bookings SET "startDateTime" = $2, "status" = $3, "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC' WHERE "id" = $1`, [booking.id, new Date(now - 3600000), 'APPROVED']);
       assert.equal(await state(), 'IN_USE');
@@ -164,7 +175,7 @@ test('admin login and car management HTTP flow', { skip: !process.env.AUTH_TEST_
     });
     await t.test('revoked admin rights apply to existing sessions', async () => {
       await execute(`UPDATE users SET "role" = $2, "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC' WHERE "email" = $1`, [adminEmail, 'USER']);
-      assert.equal((await admin.request('/api/cars/admin')).status, 403);
+      assert.equal((await admin.request('/api/cars/catalog')).status, 403);
       assert.equal((await admin.request(`/api/cars/${carId}`, 'PATCH', input)).status, 403);
     });
   } finally {

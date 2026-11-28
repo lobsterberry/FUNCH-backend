@@ -31,7 +31,7 @@ Auth.js native endpoints ยังใช้ได้ เช่น `/api/auth/pro
 
 ## จัดการรถยนต์สำหรับ Admin
 
-- `GET /api/cars/admin`: รายการรถสำหรับหลังบ้าน พร้อม `rawModel`, `year`, `categories`, `featureCodes`, `options`, `transmissionType` และ `rentalStatus` (`IDLE`, `RESERVED`, `IN_USE`) คำนวณจากการจอง PENDING/APPROVED ที่ยังไม่สิ้นสุด ไม่ส่งข้อมูลผู้จอง
+- `GET /api/cars/catalog` ส่งข้อมูลรุ่นรถ ข้อเสนอรายสาขา และรายการรถรายคันใน `data.units` พร้อมสถานะการเช่า `IDLE`, `RESERVED` หรือ `IN_USE`
 - `POST /api/cars`: สร้างรถ และ `PATCH /api/cars/:id`: บันทึกข้อมูลรถจากแบบฟอร์ม ทั้งสองจุดใช้ JSON และตรวจสิทธิ์ ADMIN พร้อม validation; ทะเบียนซ้ำในประเทศเดียวกันตอบ 409
 - ฟิลด์แบบฟอร์ม: `brand`, `model`, `year`, `licensePlate`, `country`, `hourlyRate`, `dailyRate`, `seats`, `luggageCapacity`, `transmission`, `transmissionType`, `fuelType`, `steeringSide`, `locationId`, `categories`, `categoryLabel`, `providerName`, `isAvailable`, `featureCodes`, `options` โดย options เป็น array ของ `{code, label, included}`
 - ราคาเป็น THB จำนวนบวก ทศนิยมไม่เกิน 2 ตำแหน่ง; จุดรับรถต้องอยู่ในประเทศที่ระบุ; ไม่ย้ายประเทศ/จุดรับรถขณะมีรายการจองที่ยังไม่สิ้นสุด; การแก้ไขคง description, rating, รูปภาพ และข้อมูลอื่นนอกแบบฟอร์มเดิมไว้

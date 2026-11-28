@@ -85,13 +85,12 @@ Frontend เรียก backend ผ่าน Next.js API routes ตั้ง `B
 | `GET /health` | สาธารณะ | ตรวจการเชื่อมต่อ PostgreSQL |
 | `GET /api/countries`, `GET /api/countries/:code` | สาธารณะ | รายการและรายละเอียดประเทศ |
 | `GET /api/locations`, `GET /api/locations/:id` | สาธารณะ | รายการและรายละเอียดสาขา กรองรายการได้ด้วย `countryCode` และ `city` |
-| `GET /api/cars`, `GET /api/cars/:id`, `GET /api/cars/meta` | สาธารณะ | รายการรถ รายละเอียดรถ และข้อมูลตัวกรอง |
 | `GET /api/cars/search` | สาธารณะ | ค้นหาข้อเสนอของรุ่นรถตามสาขา พร้อมจำนวนรถว่างเมื่อส่งช่วงเวลา |
 | `POST /api/bookings/calculate` | สาธารณะ | คำนวณราคาตามข้อเสนอและช่วงเช่า |
 | `POST /api/bookings` | ผู้เข้าสู่ระบบหรือสมัครพร้อมจอง | ตรวจความว่างและสร้างการจองสถานะ `PENDING` |
 | `GET /api/bookings/mine` | ผู้เข้าสู่ระบบ | ประวัติการจองของบัญชีใน session |
 | `GET /api/bookings`, `PATCH /api/bookings/:id/status` | `ADMIN` | ดูและพิจารณารายการจอง |
-| `GET /api/cars/admin`, `GET /api/cars/catalog`, `GET /api/cars/:id/schedule` | `ADMIN` | ดูรถ รุ่น ข้อเสนอ ตารางจอง และประวัติการย้ายรถ |
+| `GET /api/cars/catalog`, `GET /api/cars/:id/schedule` | `ADMIN` | ดูรถ รุ่น ข้อเสนอ ตารางจอง และประวัติการย้ายรถ |
 | `POST /api/cars`, `PATCH /api/cars/:id`, `POST /api/cars/bulk` | `ADMIN` | เพิ่มหรือแก้ไขรถรายคัน และเพิ่มหลายคันพร้อมกัน |
 | `POST /api/cars/models`, `PATCH /api/cars/models/:id`, `POST /api/cars/offers`, `PATCH /api/cars/offers/:id` | `ADMIN` | จัดการรุ่นและข้อเสนอรายสาขา |
 | `GET /api/admin/members`, `POST /api/admin/members`, `GET /api/admin/members/:id`, `PATCH /api/admin/members/:id` | `ADMIN` | จัดการสมาชิกและดูประวัติการจอง |
